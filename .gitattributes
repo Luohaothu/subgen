@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.service text eol=lf
+
+*.png binary
+*.jpg binary
+*.flac binary
+*.wav binary
+*.mp4 binary

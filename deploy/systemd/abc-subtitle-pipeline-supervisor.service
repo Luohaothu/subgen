@@ -1,0 +1,17 @@
+[Unit]
+Description=ABC subtitle pipeline request supervisor
+RequiresMountsFor=/home/leo/.local/share/abc-subtitles-recovery-6 /home/leo/nas/Other/abc
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=simple
+ExecStart=/home/leo/.local/share/abc-subtitles-recovery-6/pipeline-src/deploy/scripts/run_pipeline_supervisor.sh
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=130
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
