@@ -175,4 +175,4 @@ Run `uv lock` after changing dependencies, and commit `uv.lock` with the change.
 
 ## License
 
-No license has been chosen. Add a `LICENSE` file before distributing this code.
+MIT. See [LICENSE](LICENSE).

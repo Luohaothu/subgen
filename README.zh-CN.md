@@ -151,4 +151,4 @@ uv run pre-commit install            # 可选，安装 git hook
 
 ## 许可证
 
-尚未选择许可证。分发代码前请先添加 `LICENSE` 文件。
+MIT，见 [LICENSE](LICENSE)。

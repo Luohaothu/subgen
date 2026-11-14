@@ -9,6 +9,8 @@ description = "Resumable Japanese-to-Chinese subtitle pipeline for a local video
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Luohao Wang", email = "luohaothu@live.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["subtitles", "asr", "forced-alignment", "translation", "stash"]
 classifiers = [
   "Development Status :: 3 - Alpha",

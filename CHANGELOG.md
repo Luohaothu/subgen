@@ -16,6 +16,7 @@ All notable changes to this project are recorded here. The format follows
   CUDA or MLX on Apple Silicon.
 - Any OpenAI-compatible translation model, with an optional separate reviewer.
 - Chinese README.
+- MIT license.
 
 ### Removed
 
