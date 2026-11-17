@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d0a08">
+<meta name="robots" content="noindex, nofollow">
+<title>作业 · subgen 控制台</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSIjMGQwYTA4Ii8+PHJlY3QgeD0iNiIgeT0iNiIgd2lkdGg9IjQiIGhlaWdodD0iMjAiIGZpbGw9IiNlOGEzM2QiLz48cmVjdCB4PSIxMyIgeT0iNiIgd2lkdGg9IjEyIiBoZWlnaHQ9IjQiIGZpbGw9IiNlOGUzZGEiLz48cmVjdCB4PSIxMyIgeT0iMTQiIHdpZHRoPSI4IiBoZWlnaHQ9IjQiIGZpbGw9IiNlOGUzZGEiLz48cmVjdCB4PSIxMyIgeT0iMjIiIHdpZHRoPSI1IiBoZWlnaHQ9IjQiIGZpbGw9IiNlOGUzZGEiLz48L3N2Zz4=">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<header class="app-header" data-testid="app-header">
+  <div class="masthead">
+    <a class="brand" href="#/jobs" aria-label="subgen 控制台，返回作业列表">
+      <span class="brand-rule" aria-hidden="true"></span>
+      <span class="brand-title">subgen</span>
+      <span class="brand-sub">本地字幕流水线控制台</span>
+    </a>
+
+    <nav class="tabs" aria-label="主导航">
+      <a class="tab" href="#/jobs" data-nav="jobs"><span class="tab-num" aria-hidden="true">01</span>作业</a>
+      <a class="tab" href="#/settings" data-nav="settings"><span class="tab-num" aria-hidden="true">02</span>参数设置</a>
+    </nav>
+
+    <div class="conn" id="conn" data-conn="pending">
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span class="conn-text" id="conn-text">连接中</span>
+      <span class="conn-clock mono" id="conn-clock" aria-hidden="true">--:--:--</span>
+    </div>
+  </div>
+
+  <div class="status-strip">
+    <div class="status-strip-in">
+      <div class="stat">
+        <span class="stat-k">工作目录</span>
+        <span class="stat-v mono" id="meta-work-root" title="work_root">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">清单</span>
+        <span class="stat-v mono" id="meta-inventory">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">活动作业</span>
+        <span class="stat-v mono" id="meta-active">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">参数设置</span>
+        <span class="stat-v" id="meta-settings"><a href="#/settings">—</a></span>
+      </div>
+      <div class="stat stat--end">
+        <span class="stat-k">轮询</span>
+        <span class="stat-v" id="meta-poll">启动中</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="run-strip" id="run-strip" hidden aria-hidden="true"><i></i></div>
+</header>
+
+<main class="app-main" id="main">
+
+  <div class="offline-banner" id="offline-banner" hidden role="alert">
+    <span class="offline-mark" aria-hidden="true">!</span>
+    <div class="offline-copy">
+      <strong>无法连接本地服务</strong>
+      <p>subgen web 可能已停止或端口已变化。页面每 5 秒自动重试；重新运行 <code class="mono">subgen web</code> 后无需刷新。</p>
+      <p class="offline-detail mono" id="offline-detail"></p>
+    </div>
+  </div>
+
+  <!-- ============================== 作业列表 ============================== -->
+  <section class="view" id="jobs-view" data-testid="jobs-view" hidden aria-labelledby="jobs-title">
+    <div class="view-head">
+      <h1 id="jobs-title">作业</h1>
+      <p class="view-sub">创建一次运行，或查看已经结束的运行。</p>
+      <span class="view-rule" aria-hidden="true"></span>
+    </div>
+
+    <div class="jobs-grid">
+      <aside class="panel create-panel" aria-labelledby="create-title">
+        <header class="panel-head">
+          <h2 id="create-title">新建作业</h2>
+          <span class="panel-hint">七阶段顺序执行</span>
+        </header>
+
+        <div class="create-lock" id="create-lock" hidden>
+          <span class="lock-mark" aria-hidden="true">■</span>
+          <div>
+            <p class="lock-title">有作业正在运行</p>
+            <p class="lock-body">同一工作目录一次只能运行一个作业。结束或取消后即可创建。</p>
+            <a class="lock-link" id="create-lock-link" href="#/jobs">查看当前作业 →</a>
+          </div>
+        </div>
+
+        <div class="create-notice" id="create-settings-notice" hidden>
+          <p>参数设置无法加载，创建会被拒绝。</p>
+          <a href="#/settings">去修复参数设置 →</a>
+        </div>
+
+        <form class="create-form" id="create-form" data-testid="create-form" novalidate>
+          <div class="field-row-inline">
+            <label for="create-limit">限流数量 <span class="opt">可选</span></label>
+            <input class="input" id="create-limit" data-testid="create-limit" name="limit"
+                   type="number" min="0" step="1" inputmode="numeric"
+                   placeholder="留空 = 整份清单" autocomplete="off">
+            <p class="field-hint">处理前 N 个视频。留空表示不限制。</p>
+            <p class="field-error" data-create-error="limit" hidden></p>
+          </div>
+
+          <div class="field-row-inline">
+            <label for="create-video-ids">指定视频 ID <span class="opt">可选</span></label>
+            <textarea class="input input--area" id="create-video-ids" data-testid="create-video-ids"
+                      name="video_ids" rows="3" spellcheck="false" autocomplete="off"
+                      placeholder="每行一个 64 位小写十六进制 ID"></textarea>
+            <p class="field-hint">只跑指定视频，可换行或逗号分隔。</p>
+            <p class="field-error" data-create-error="video_ids" hidden></p>
+          </div>
+
+          <div class="batch-grid">
+            <div class="field-row-inline">
+              <label for="create-asr-batch">ASR 批大小</label>
+              <input class="input" id="create-asr-batch" data-testid="create-asr-batch" name="asr_batch_size"
+                     type="number" min="1" step="1" inputmode="numeric" value="32" autocomplete="off">
+              <p class="field-error" data-create-error="asr_batch_size" hidden></p>
+            </div>
+            <div class="field-row-inline">
+              <label for="create-align-batch">对齐批大小</label>
+              <input class="input" id="create-align-batch" data-testid="create-align-batch" name="alignment_batch_size"
+                     type="number" min="1" step="1" inputmode="numeric" value="16" autocomplete="off">
+              <p class="field-error" data-create-error="alignment_batch_size" hidden></p>
+            </div>
+          </div>
+
+          <div class="toggles">
+            <label class="switch-row" for="create-skip-inventory">
+              <span class="switch-copy">
+                <span class="switch-title">跳过清点</span>
+                <span class="switch-note">复用现有清单快照</span>
+              </span>
+              <input type="checkbox" id="create-skip-inventory" data-testid="create-skip-inventory" name="skip_inventory">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="switch-row" for="create-skip-extract">
+              <span class="switch-copy">
+                <span class="switch-title">跳过抽取</span>
+                <span class="switch-note">复用已有音频</span>
+              </span>
+              <input type="checkbox" id="create-skip-extract" data-testid="create-skip-extract" name="skip_extract">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="switch-row switch-row--dry" for="create-dry-run">
+              <span class="switch-copy">
+                <span class="switch-title">试运行</span>
+                <span class="switch-note">只构建命令，不启动阶段</span>
+              </span>
+              <input type="checkbox" id="create-dry-run" data-testid="create-dry-run" name="dry_run">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+          </div>
+
+          <div class="create-error" id="create-error" data-testid="create-error" hidden aria-live="polite"></div>
+
+          <div class="create-actions">
+            <button class="btn btn--primary" type="submit" id="create-submit" data-testid="create-submit">创建作业</button>
+            <span class="create-hint">每次提交生成新的 client_token</span>
+          </div>
+        </form>
+      </aside>
+
+      <div class="panel list-panel" aria-labelledby="list-title">
+        <header class="panel-head">
+          <h2 id="list-title">作业列表</h2>
+          <span class="panel-hint" id="job-list-count">—</span>
+          <button class="btn btn--tiny btn--ghost" type="button" id="list-refresh">刷新</button>
+        </header>
+
+        <div class="list-loading" id="jobs-loading" hidden aria-hidden="true">
+          <div class="skeleton-row"><span class="skeleton skeleton--id"></span><span class="skeleton skeleton--wide"></span><span class="skeleton skeleton--bar"></span></div>
+          <div class="skeleton-row"><span class="skeleton skeleton--id"></span><span class="skeleton skeleton--wide"></span><span class="skeleton skeleton--bar"></span></div>
+          <div class="skeleton-row"><span class="skeleton skeleton--id"></span><span class="skeleton skeleton--wide"></span><span class="skeleton skeleton--bar"></span></div>
+        </div>
+
+        <div class="list-error" id="jobs-error" hidden></div>
+
+        <ol class="job-list" id="job-list" data-testid="job-list" aria-label="作业列表"></ol>
+
+        <div class="empty" id="job-empty" data-testid="job-empty" hidden>
+          <div class="empty-mark" aria-hidden="true">— — —</div>
+          <h3>尚无作业</h3>
+          <p>用左侧面板创建第一次运行。先勾选「试运行」，可以在不启动模型的情况下验证将要执行的命令。</p>
+          <p class="empty-stages" aria-hidden="true">01 清点 · 02 抽取 · 03 转写 · 04 对齐 · 05 主翻译 · 06 复核 · 07 发布</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== 作业详情 ============================== -->
+  <section class="view" id="job-detail" data-testid="job-detail" hidden aria-label="作业详情"></section>
+
+  <!-- ============================== 参数设置 ============================== -->
+  <section class="view" id="settings-view" data-testid="settings-view" hidden aria-labelledby="settings-title">
+    <div class="view-head">
+      <h1 id="settings-title">参数设置</h1>
+      <p class="view-sub">编辑 subgen.toml，环境变量优先于文件。</p>
+      <span class="view-rule" aria-hidden="true"></span>
+    </div>
+    <div id="settings-body"></div>
+  </section>
+
+</main>
+
+<footer class="app-footer">
+  <span>subgen web · 本地控制台</span>
+  <span class="mono">无外部请求 · 离线可用</span>
+</footer>
+
+<div class="toast" id="toast" data-testid="toast" role="status" aria-live="polite" data-visible="false"></div>
+<p class="sr-only" id="sr-status" role="status" aria-live="polite"></p>
+
+<dialog class="dialog" id="external-ack" data-testid="external-ack" aria-labelledby="ack-title">
+  <div class="dialog-head">
+    <span class="dialog-mark" aria-hidden="true">!</span>
+    <div>
+      <h2 id="ack-title">检测到外部运行</h2>
+      <p class="dialog-sub mono" id="ack-code">external_activity</p>
+    </div>
+  </div>
+  <div class="dialog-body" id="ack-body"></div>
+  <div class="dialog-actions">
+    <button class="btn" type="button" value="cancel" id="ack-cancel">返回</button>
+    <button class="btn btn--primary" type="button" value="ack" id="ack-confirm">确认并创建</button>
+  </div>
+</dialog>
+
+<dialog class="dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+  <div class="dialog-head">
+    <span class="dialog-mark dialog-mark--quiet" aria-hidden="true">?</span>
+    <div>
+      <h2 id="confirm-title">确认</h2>
+      <p class="dialog-sub mono" id="confirm-code"></p>
+    </div>
+  </div>
+  <div class="dialog-body" id="confirm-body"></div>
+  <div class="dialog-actions">
+    <button class="btn" type="button" id="confirm-cancel">返回</button>
+    <button class="btn btn--danger" type="button" id="confirm-ok">确认</button>
+  </div>
+</dialog>
+
+<noscript>
+  <div class="noscript">这个控制台需要 JavaScript。请启用后重新加载页面。</div>
+</noscript>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>
