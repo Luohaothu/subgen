@@ -28,6 +28,17 @@ class CliTests(unittest.TestCase):
             self.assertEqual(cli.main([]), 0)
             runner.assert_called_once_with([])
 
+    def test_web_dispatches_to_the_console(self):
+        with (
+            patch("subtitle_pipeline.cli.runner_cli.main") as runner,
+            patch("subtitle_pipeline.cli.serve_cli.main") as serve,
+            patch("subtitle_pipeline.cli.web_cli.main", return_value=5) as web,
+        ):
+            self.assertEqual(cli.main(["web", "--port", "0"]), 5)
+            web.assert_called_once_with(["--port", "0"])
+            runner.assert_not_called()
+            serve.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
