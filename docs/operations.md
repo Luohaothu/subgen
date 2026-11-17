@@ -119,6 +119,31 @@ supervisor.
 `deploy/scripts/vllm_service.sh status` prints the served model, the unit state,
 and the health check result.
 
+## Web console
+
+The portable hosts also have an interactive console. It is not part of the
+systemd supervisor and does not replace it.
+
+```bash
+uv run subgen web --open
+```
+
+The console prints its loopback URL. It runs one job at a time through the same
+seven stage commands as `subgen`, shows per-stage progress, and edits
+`subgen.toml`. Job records and logs live under
+`$WORK_ROOT/state/web/jobs/`. The lock file is
+`$WORK_ROOT/state/web/server.lock`; a second console on the same work root exits
+2.
+
+Stop the console with Ctrl-C or SIGTERM. It cancels the running job with reason
+`server_shutdown`, waits for the worker, and releases the lock. If the process is
+killed, the next start marks every non-terminal job `interrupted` and kills a
+leftover stage process group before it binds.
+
+The console binds `127.0.0.1` only and has no authentication. Do not expose the
+port or put it behind a public proxy. The full operator guide is
+[Web console](web.md).
+
 ## Stage order
 
 Extraction and ASR run concurrently until every audio file exists. After that
