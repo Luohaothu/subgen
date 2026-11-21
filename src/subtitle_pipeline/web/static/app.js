@@ -1,3165 +1,2746 @@
-// No build step and no external assets, so the console works offline.
-// Code identifiers stay English; operator-facing strings stay Chinese.
-
+/* No build step and no external assets: the console works offline. */
 (function () {
   "use strict";
 
 
-  var STAGES = [
-    { name: "inventory", num: "01", cn: "清点" },
-    { name: "extract", num: "02", cn: "抽取" },
-    { name: "asr", num: "03", cn: "转写" },
-    { name: "alignment", num: "04", cn: "对齐" },
-    { name: "translation_primary", num: "05", cn: "主翻译" },
-    { name: "translation_review", num: "06", cn: "复核" },
-    { name: "publish", num: "07", cn: "发布" }
-  ];
+  const $ = (selector, root) => (root || document).querySelector(selector);
+  const $$ = (selector, root) => Array.from((root || document).querySelectorAll(selector));
 
-  var STAGE_ALIASES = {
-    inventory: ["inventory", "runtime_inventory"],
-    extract: ["extract", "runtime_extract"],
-    asr: ["asr", "corpus_asr"],
-    alignment: ["alignment", "corpus_alignment", "align"],
-    translation_primary: ["translation_primary", "corpus_translation_primary", "primary"],
-    translation_review: ["translation_review", "corpus_translation_review", "review"],
-    publish: ["publish", "corpus_publish"]
-  };
-
-  var STATE_CN = {
-    queued: "排队中",
-    running: "运行中",
-    succeeded: "成功",
-    failed: "失败",
-    cancelled: "已取消",
-    interrupted: "已中断",
-    dry_run: "试运行"
-  };
-
-  var STAGE_STATUS_CN = {
-    pending: "待运行",
-    running: "运行中",
-    succeeded: "成功",
-    failed: "失败",
-    cancelled: "已取消",
-    skipped: "跳过"
-  };
-
-  var SOURCE_CN = {
-    env: "环境变量",
-    file: "文件",
-    derived: "派生",
-    default: "默认"
-  };
-
-  var REASON_CN = {
-    cancelled: "操作员取消",
-    restart: "服务重启",
-    server_shutdown: "服务停止",
-    interrupted: "中断"
-  };
-
-  function reasonCn(reason) {
-    if (!reason) return "";
-    return REASON_CN[reason] || String(reason);
-  }
-
-  var SECTION_CN = { paths: "路径", runtime: "运行时", translation: "翻译" };
-  var SECTION_DESC = {
-    paths: "语料、工作目录与模型位置",
-    runtime: "设备与 ASR 引擎",
-    translation: "OpenAI 兼容服务与模型版本"
-  };
-
-  var EVENT_CN = {
-    started: "开始",
-    discovered: "发现视频",
-    observed: "探测完成",
-    completed: "完成",
-    failed: "失败",
-    batch_started: "批次开始",
-    batch_completed: "批次完成",
-    batch_failed: "批次失败",
-    batch_deferred: "批次延后",
-    batch_incomplete: "批次未完成",
-    video_started: "视频开始",
-    video_completed: "视频完成",
-    video_existing: "视频已存在",
-    video_failed_exception: "视频异常",
-    video_target_collision: "目标冲突",
-    skipped_verified: "校验通过跳过",
-    skipped_existing: "已存在跳过",
-    skipped_no_audio: "无音轨跳过",
-    deferred_missing_audio: "延后 · 缺音频",
-    deferred_missing_source: "延后 · 缺源文件",
-    video_missing_audio: "缺失 · 音频",
-    video_missing_asr: "缺失 · 转写",
-    video_missing_alignment: "缺失 · 对齐",
-    video_missing_draft: "缺失 · 草稿",
-    video_missing_candidate: "缺失 · 候选",
-    video_invalid_candidate: "无效 · 候选",
-    model_download_started: "下载模型",
-    model_download_completed: "模型就绪"
-  };
-
-  var COUNTER_CN = {
-    count: "条目",
-    discovered: "发现",
-    observed: "探测",
-    selected: "选中",
-    completed: "完成",
-    existing: "已存在",
-    no_audio: "无音轨",
-    target_exists: "已发布",
-    failed: "失败",
-    missing_audio: "缺音频",
-    missing_asr: "缺转写",
-    missing_alignment: "缺对齐",
-    missing_draft: "缺草稿",
-    missing_candidate: "缺候选",
-    invalid_candidate: "无效候选",
-    target_collision: "目标冲突",
-    skipped_existing: "已跳过",
-    skipped_no_audio: "无音轨跳过",
-    skipped_verified: "校验跳过",
-    deferred: "延后"
-  };
-
-  var COUNTER_ORDER = [
-    "count", "completed", "failed", "selected", "observed", "discovered",
-    "existing", "no_audio", "target_exists", "missing_audio", "missing_asr",
-    "missing_alignment", "missing_draft", "missing_candidate",
-    "invalid_candidate", "target_collision", "skipped_existing",
-    "skipped_no_audio", "skipped_verified", "deferred"
-  ];
-
-  var ERROR_COPY = {
-    job_running: {
-      title: "已有作业在运行",
-      hint: "同一工作目录一次只能运行一个作业。等待当前作业结束，或在作业详情中取消它。"
-    },
-    external_activity: {
-      title: "检测到外部运行",
-      hint: "进度日志在最近 120 秒内有写入，但没有 Web 作业在运行。可能有人在终端直接运行了 subgen；同时运行会让两个进程争用汇总文件与临时目录。"
-    },
-    settings_invalid: {
-      title: "参数设置无效",
-      hint: "subgen.toml 无法加载，服务拒绝了这次请求。请到<a href=\"#/settings\">参数设置</a>修复后重试。"
-    },
-    settings_changed: {
-      title: "配置文件已被修改",
-      hint: "保存期间 subgen.toml 被其他进程改动。已重新载入最新文件，请确认内容后再次保存。"
-    },
-    cannot_rewrite: {
-      title: "无法安全重写配置文件",
-      hint: "当前文件布局无法在保留注释的前提下重写。可以强制写入规范 TOML，原文件会先备份为 subgen.toml.bak。"
-    },
-    restart_required: {
-      title: "需要重启服务",
-      hint: "work_root 或 source_root 已改变。重启 <span class=\"mono\">subgen web</span> 后新配置才会生效。"
-    },
-    invalid_params: {
-      title: "作业参数无效",
-      hint: "检查限流数量、视频 ID 与批大小后重试。"
-    },
-    job_not_finished: {
-      title: "作业尚未结束",
-      hint: "只有已结束的作业可以删除。运行中的作业请先取消。"
-    },
-    not_found: {
-      title: "找不到目标",
-      hint: "该作业可能已被删除，或服务的工作目录已经改变。"
-    },
-    unknown_stage: {
-      title: "未知阶段",
-      hint: "阶段映射与当前流水线版本不匹配，请升级 subgen。"
-    },
-    settings_load_error: {
-      title: "配置文件无法加载",
-      hint: "普通保存已禁用。修复会用表单内容重写整个文件。"
-    },
-    settings_conflict: {
-      title: "配置文件已被修改",
-      hint: "请确认最新文件内容后再次保存。"
-    },
-    draft_invalid: {
-      title: "参数设置校验未通过",
-      hint: "服务端拒绝了这份草稿。修正标红的字段后重试；预览需要一次通过的校验。"
-    },
-    internal_error: {
-      title: "服务内部错误",
-      hint: "subgen web 返回了未预期的错误。诊断信息可用于排查。"
-    },
-    offline: {
-      title: "无法连接本地服务",
-      hint: "subgen web 可能已停止。页面会每 5 秒自动重试。"
-    }
-  };
-
-  var FIELD_SPECS = [
-    {
-      section: "paths", key: "source_root", label: "视频语料目录", kind: "path",
-      env: "SUBGEN_SOURCE_ROOT",
-      help: "只读视频语料根目录。必须是绝对路径，且存在、不是符号链接。"
-    },
-    {
-      section: "paths", key: "work_root", label: "工作目录", kind: "path",
-      env: "SUBGEN_WORK_ROOT",
-      help: "流水线状态、模型、日志都写在这里。必须是绝对路径且存在。"
-    },
-    {
-      section: "paths", key: "model_root", label: "模型目录", kind: "path",
-      env: "SUBGEN_MODEL_ROOT",
-      help: "本地权重目录。留空时由工作目录派生。"
-    },
-    {
-      section: "paths", key: "asr_model", label: "ASR 模型目录", kind: "path",
-      env: "SUBGEN_ASR_MODEL",
-      help: "ASR 权重目录。留空时由模型目录派生。"
-    },
-    {
-      section: "runtime", key: "device", label: "运行设备", kind: "enum",
-      env: "SUBGEN_DEVICE", choices: ["auto", "cpu", "cuda", "mps"],
-      help: "auto 依次选择 CUDA、MPS、CPU。显式值覆盖自动选择。"
-    },
-    {
-      section: "runtime", key: "asr_engine", label: "ASR 引擎", kind: "enum",
-      env: "SUBGEN_ASR_ENGINE", choices: ["auto", "vllm", "funasr"],
-      help: "auto 在 CUDA 上选 vLLM，其余用 FunASR。"
-    },
-    {
-      section: "translation", key: "endpoint", label: "翻译服务地址", kind: "url",
-      env: "SUBGEN_TRANSLATION_ENDPOINT",
-      help: "OpenAI 兼容服务地址，必须以 http:// 或 https:// 开头。"
-    },
-    {
-      section: "translation", key: "model", label: "主翻译模型", kind: "text",
-      env: "SUBGEN_TRANSLATION_MODEL",
-      help: "主翻译模型的 provider 模型 ID。"
-    },
-    {
-      section: "translation", key: "revision", label: "主翻译版本", kind: "text",
-      env: "SUBGEN_TRANSLATION_REVISION",
-      help: "主翻译模型版本，来自 provider 配置。"
-    },
-    {
-      section: "translation", key: "api_key_env", label: "API key 变量名", kind: "text",
-      env: "SUBGEN_API_KEY_ENV",
-      help: "存放 API key 的环境变量名。控制台只显示是否配置，不读取 key 本身。"
-    },
-    {
-      section: "translation", key: "review_model", label: "复核模型", kind: "text",
-      env: "SUBGEN_TRANSLATION_REVIEW_MODEL",
-      help: "留空时沿用主翻译模型。"
-    },
-    {
-      section: "translation", key: "review_revision", label: "复核版本", kind: "text",
-      env: "SUBGEN_TRANSLATION_REVIEW_REVISION",
-      help: "留空时沿用主翻译版本。"
-    }
-  ];
-
-  var MAX_EVENTS = 60;
-  var MAX_LOG = 240000;
-  var META_INTERVAL = 5000;
-  var DETAIL_INTERVAL = 1000;
-
-
-  function $(sel, root) { return (root || document).querySelector(sel); }
-  function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
-
-  var ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   function esc(value) {
-    return String(value === null || value === undefined ? "" : value)
-      .replace(/[&<>"']/g, function (ch) { return ESC_MAP[ch]; });
+    return String(value == null ? "" : value).replace(/[&<>"']/g, (character) => ESCAPES[character]);
   }
 
-  function pad2(n) { return String(n).padStart(2, "0"); }
+  function pad2(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  const numberFormatter = new Intl.NumberFormat("zh-CN");
+
+  function fmtCount(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? numberFormatter.format(number) : "—";
+  }
+
+  function toSeconds(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function fmtDateTime(epoch) {
+    const seconds = toSeconds(epoch);
+    if (seconds == null) return "";
+    const date = new Date(seconds * 1000);
+    return `${date.getMonth() + 1}月${date.getDate()}日 ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  }
+
+  function fmtClock(epoch) {
+    const seconds = toSeconds(epoch);
+    if (seconds == null) return "";
+    const date = new Date(seconds * 1000);
+    return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  }
 
   function toEpoch(value) {
-    if (value === null || value === undefined || value === "") return null;
-    if (typeof value === "number") return Number.isFinite(value) ? value : null;
-    if (typeof value === "string") {
-      var parsed = Date.parse(value);
-      if (Number.isFinite(parsed)) return parsed / 1000;
-      var numeric = Number(value);
+    if (typeof value === "number") return value > 1e12 ? value / 1000 : value;
+    if (typeof value === "string" && value) {
+      const parsed = Date.parse(value);
+      if (!Number.isNaN(parsed)) return parsed / 1000;
+      const numeric = Number(value);
       if (Number.isFinite(numeric)) return numeric;
     }
     return null;
   }
 
-  function fmtTime(value) {
-    var sec = toEpoch(value);
-    if (sec === null) return "—";
-    var d = new Date(sec * 1000);
-    if (isNaN(d.getTime())) return "—";
-    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) +
-      " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
-  }
-
-  function fmtClock(value) {
-    var sec = toEpoch(value);
-    if (sec === null) return "—";
-    var d = new Date(sec * 1000);
-    if (isNaN(d.getTime())) return "—";
-    return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
-  }
-
   function fmtDuration(seconds) {
-    if (!Number.isFinite(seconds) || seconds < 0) return "—";
-    var total = Math.floor(seconds);
-    var h = Math.floor(total / 3600);
-    var m = Math.floor((total % 3600) / 60);
-    var s = total % 60;
-    if (h > 0) return h + ":" + pad2(m) + ":" + pad2(s);
-    return pad2(m) + ":" + pad2(s);
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    if (total < 60) return `${total} 秒`;
+    const minutes = Math.floor(total / 60);
+    if (minutes < 60) {
+      const rest = total % 60;
+      return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const restMinutes = minutes % 60;
+    return restMinutes ? `${hours} 小时 ${restMinutes} 分` : `${hours} 小时`;
   }
 
-  function fmtNum(n) {
-    if (!Number.isFinite(n)) return "—";
-    return n.toLocaleString("en-US");
+  function jobTitle(epoch) {
+    const date = fmtDateTime(epoch);
+    return date ? `${date} 的任务` : "任务";
   }
 
-  function num(value) {
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  function basename(path) {
+    if (!path) return "";
+    const parts = String(path).split("/");
+    return parts[parts.length - 1] || "";
   }
 
   function clampPercent(done, total) {
-    if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return null;
-    return Math.max(0, Math.min(100, (done / total) * 100));
+    if (!total || total <= 0) return null;
+    return Math.min(100, Math.max(0, Math.round((Number(done || 0) / Number(total)) * 100)));
   }
 
-  function shortSha(value) {
-    if (typeof value !== "string" || !value) return "—";
-    return value.length > 12 ? value.slice(0, 12) + "…" : value;
-  }
-
-  function fmtValue(value) {
-    if (value === null || value === undefined) return "未设置";
-    var text = String(value);
-    return text === "" ? "空值" : text;
-  }
-
-  function isActiveState(state) {
-    return state === "queued" || state === "running";
-  }
-
-  function stageCn(name) {
-    for (var i = 0; i < STAGES.length; i++) if (STAGES[i].name === name) return STAGES[i].cn;
-    return name || "—";
-  }
-
-  function stageNum(name) {
-    for (var i = 0; i < STAGES.length; i++) if (STAGES[i].name === name) return STAGES[i].num;
-    return "--";
-  }
-
-  function resolveStageName(name) {
-    if (!name || typeof name !== "string") return null;
-    var raw = name;
-    var keys = Object.keys(STAGE_ALIASES);
-    for (var i = 0; i < keys.length; i++) {
-      if (STAGE_ALIASES[keys[i]].indexOf(raw) !== -1) return keys[i];
-    }
-    return null;
-  }
-
-  function eventCn(event) {
-    if (EVENT_CN[event]) return EVENT_CN[event];
-    if (typeof event !== "string") return "事件";
-    if (event.indexOf("deferred_") === 0) return "延后 · " + event.slice(9).replace(/_/g, " ");
-    if (event.indexOf("video_missing_") === 0) return "缺失 · " + event.slice(14).replace(/_/g, " ");
-    if (event.indexOf("video_invalid_") === 0) return "无效 · " + event.slice(14).replace(/_/g, " ");
-    if (event.indexOf("skipped_") === 0) return "跳过 · " + event.slice(8).replace(/_/g, " ");
-    if (event.indexOf("batch_") === 0) return "批次 · " + event.slice(6).replace(/_/g, " ");
-    return event;
-  }
-
-  function isFailureEvent(event) {
-    if (typeof event !== "string") return false;
-    return event.indexOf("_failed") !== -1 ||
-      event.indexOf("deferred_") === 0 ||
-      event.indexOf("video_missing_") === 0 ||
-      event.indexOf("video_invalid_") === 0 ||
-      event === "failed" ||
-      event === "video_target_collision";
-  }
-
-  function specFor(section, key) {
-    for (var i = 0; i < FIELD_SPECS.length; i++) {
-      if (FIELD_SPECS[i].section === section && FIELD_SPECS[i].key === key) return FIELD_SPECS[i];
-    }
-    return null;
-  }
-
-  function stageEntry(record, name) {
-    var stages = record && Array.isArray(record.stages) ? record.stages : [];
-    for (var i = 0; i < stages.length; i++) {
-      var s = stages[i];
-      if (!s || typeof s !== "object") continue;
-      if ((s.name || s.stage) === name) return s;
-    }
-    return null;
-  }
-
-  function stageStatus(stage) {
-    if (!stage) return "pending";
-    return stage.status || stage.state || "pending";
-  }
-
-  function stageCounters(stage) {
-    if (!stage) return null;
-    if (stage.counters && typeof stage.counters === "object") return stage.counters;
-    if (stage.progress && stage.progress.counts && typeof stage.progress.counts === "object") {
-      return stage.progress.counts;
-    }
-    return null;
-  }
-
-  function stageEvents(stage) {
-    if (!stage) return [];
-    if (Array.isArray(stage.events)) return stage.events;
-    if (stage.progress && Array.isArray(stage.progress.events)) return stage.progress.events;
-    return [];
-  }
-
-  function isActive(record) {
-    return !!record && isActiveState(record.state);
-  }
-
-  function currentStageName(record) {
-    if (!record) return null;
-    var stages = Array.isArray(record.stages) ? record.stages : [];
-    var index = Number.isInteger(record.current) ? record.current : -1;
-    if (index >= 0 && index < STAGES.length) {
-      var named = STAGES[index].name;
-      if (stageEntry(record, named)) return named;
-    }
-    for (var i = 0; i < stages.length; i++) {
-      if (stageStatus(stages[i]) === "running") {
-        var resolved = resolveStageName(stages[i].name || stages[i].stage);
-        if (resolved) return resolved;
-      }
-    }
-    return null;
-  }
-
-  function stageIndex(record) {
-    var name = currentStageName(record);
-    if (!name) return -1;
-    for (var i = 0; i < STAGES.length; i++) if (STAGES[i].name === name) return i;
-    return -1;
-  }
-
-  function recordParams(record) {
-    if (!record) return {};
-    return record.params || record.plan || record.job_params || {};
-  }
-
-  function paramChips(params) {
-    var chips = [];
-    if (params.limit !== null && params.limit !== undefined) chips.push("限流 " + params.limit);
-    if (Array.isArray(params.video_ids) && params.video_ids.length) {
-      chips.push("指定 " + params.video_ids.length + " 个视频");
-    }
-    if (params.skip_inventory) chips.push("跳过清点");
-    if (params.skip_extract) chips.push("跳过抽取");
-    chips.push("ASR 批 " + (params.asr_batch_size || 32));
-    chips.push("对齐批 " + (params.alignment_batch_size || 16));
-    return chips;
-  }
-
-  function plannedCommandCount(record) {
-    var stages = record && Array.isArray(record.stages) ? record.stages : [];
-    var planned = stages.filter(function (stage) {
-      return stage && Array.isArray(stage.argv) && stage.argv.length;
-    }).length;
-    if (planned > 0) return planned;
-    var params = recordParams(record);
-    var count = 7;
-    if (params.skip_inventory) count -= 1;
-    if (params.skip_extract) count -= 1;
-    return count;
-  }
-
-  function durationOf(record) {
-    var start = toEpoch(record && record.created_at);
-    if (start === null) return null;
-    var end = toEpoch(record && record.ended_at);
-    return (end === null ? Date.now() / 1000 : end) - start;
-  }
-
-  function eventKey(event, fallbackStage) {
-    var stage = event && (event.stage || fallbackStage) ? String(event.stage || fallbackStage) : "";
-    var at = event && event.timestamp !== undefined ? String(event.timestamp) : (event && event.at ? String(event.at) : "");
-    var video = event && (event.video_id || event.relative_path) ? String(event.video_id || event.relative_path) : "";
-    return stage + "|" + String(event && event.event) + "|" + at + "|" + video;
-  }
-
-  function isNearBottom(el, slack) {
-    if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < (slack || 40);
-  }
-
-
-  function ApiError(options) {
-    var opts = options || {};
-    this.name = "ApiError";
-    this.status = opts.status || 0;
-    this.code = opts.code || "internal_error";
-    this.message = opts.message || "";
-    this.detail = opts.detail || "";
-    this.fields = opts.fields || [];
-    if (Error.captureStackTrace) Error.captureStackTrace(this, ApiError);
-  }
-  ApiError.prototype = Object.create(Error.prototype);
-  ApiError.prototype.constructor = ApiError;
-
-  function OfflineError(message) {
-    this.name = "OfflineError";
-    this.message = message || "无法连接本地服务";
-    if (Error.captureStackTrace) Error.captureStackTrace(this, OfflineError);
-  }
-  OfflineError.prototype = Object.create(Error.prototype);
-  OfflineError.prototype.constructor = OfflineError;
-
-  function normalizeFields(fields) {
-    var out = [];
-    if (!fields) return out;
-    if (Array.isArray(fields)) {
-      fields.forEach(function (item) {
-        if (typeof item === "string") {
-          if (item) out.push({ field: "", message: item });
-        } else if (item && typeof item === "object") {
-          var message = item.message || item.error || item.msg || "";
-          if (message) {
-            out.push({
-              field: String(item.field || item.name || item.key || ""),
-              message: String(message)
-            });
-          }
-        }
-      });
-      return out;
-    }
-    if (typeof fields === "object") {
-      Object.keys(fields).forEach(function (key) {
-        var value = fields[key];
-        if (typeof value === "string") out.push({ field: key, message: value });
-        else if (value) out.push({ field: key, message: JSON.stringify(value) });
-      });
-    }
-    return out;
-  }
-
-  function requestJson(method, path, body) {
-    var mutating = method !== "GET" && method !== "HEAD";
-    var init = {
-      method: method,
-      cache: "no-store",
-      headers: { Accept: "application/json" }
-    };
-    // The server's same-origin guard requires a JSON content type on every
-    // mutating request, including POST and DELETE calls that carry no payload.
-    if (mutating) init.headers["Content-Type"] = "application/json";
-    if (body !== undefined) init.body = JSON.stringify(body);
-    else if (mutating) init.body = "{}";
-    var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, 15000);
-    init.signal = controller.signal;
-
-    return fetch(path, init).catch(function () {
-      throw new OfflineError("请求失败：连接被拒绝或服务未响应");
-    }).then(function (response) {
-      if (response.status === 204 || response.status === 205) return null;
-      return response.text().then(function (text) {
-        var data = null;
-        if (text) {
-          try { data = JSON.parse(text); } catch (err) { data = null; }
-        }
-        if (!response.ok) {
-          var envelope = data && typeof data === "object" ? data.error : null;
-          throw new ApiError({
-            status: response.status,
-            code: envelope && envelope.code ? envelope.code : "http_" + response.status,
-            message: (envelope && envelope.message) || "",
-            detail: (envelope && envelope.detail) || "",
-            fields: normalizeFields(envelope && envelope.fields)
-          });
-        }
-        if (data === null) {
-          throw new ApiError({ status: response.status, code: "internal_error", message: "响应不是 JSON" });
-        }
-        return data;
-      });
-    }).finally(function () {
-      clearTimeout(timer);
-    });
-  }
-
-  function requestText(path) {
-    var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, 15000);
-    return fetch(path, { cache: "no-store", signal: controller.signal }).catch(function () {
-      throw new OfflineError("请求失败：连接被拒绝或服务未响应");
-    }).then(function (response) {
-      return response.text().then(function (text) {
-        if (!response.ok) {
-          var envelope = null;
-          try { envelope = JSON.parse(text).error; } catch (err) { envelope = null; }
-          throw new ApiError({
-            status: response.status,
-            code: (envelope && envelope.code) || "http_" + response.status,
-            message: (envelope && envelope.message) || "",
-            detail: (envelope && envelope.detail) || "",
-            fields: normalizeFields(envelope && envelope.fields)
-          });
-        }
-        return text;
-      });
-    }).finally(function () {
-      clearTimeout(timer);
-    });
-  }
-
-  function unwrapJob(data) {
-    if (!data || typeof data !== "object") return null;
-    if (data.job && typeof data.job === "object") return data.job;
-    if (data.job_id) return data;
-    if (data.record && typeof data.record === "object") return data.record;
-    return null;
-  }
-
-  function mergeRecord(base, patch) {
-    if (!base) return patch;
-    var next = Object.assign({}, base, patch || {});
-    var baseStages = Array.isArray(base.stages) ? base.stages : [];
-    var patchStages = patch && Array.isArray(patch.stages) ? patch.stages : [];
-    var merged = baseStages.map(function (stage) {
-      var name = stage.name || stage.stage;
-      var update = null;
-      for (var i = 0; i < patchStages.length; i++) {
-        if ((patchStages[i].name || patchStages[i].stage) === name) { update = patchStages[i]; break; }
-      }
-      return update ? Object.assign({}, stage, update) : stage;
-    });
-    patchStages.forEach(function (stage) {
-      var name = stage.name || stage.stage;
-      var known = merged.some(function (item) { return (item.name || item.stage) === name; });
-      if (!known) merged.push(stage);
-    });
-    next.stages = merged;
-    return next;
-  }
-
-
-  var app = {
-    route: { name: "jobs", id: null },
-    meta: null,
-    metaError: null,
-    metaOnline: true,
-    metaPolledAt: 0,
-    metaTimer: null,
-    jobs: [],
-    jobsLoaded: false,
-    jobsLoading: false,
-    jobListError: null,
-    activeJobId: null,
-    detail: null,
-    detailTimer: null,
-    settings: null,
-    settingsLoading: false,
-    settingsTimer: null,
-    clockTimer: null,
-    toastTimer: null,
-    pendingCreateToken: null,
-    createBusy: false
-  };
-
-
-  function toast(message, kind, code) {
-    var el = $("#toast");
-    if (!el) return;
-    el.innerHTML = esc(message) + (code ? '<span class="toast-code">' + esc(code) + "</span>" : "");
-    el.dataset.kind = kind || "info";
-    el.dataset.visible = "true";
-    clearTimeout(app.toastTimer);
-    app.toastTimer = setTimeout(function () {
-      el.dataset.visible = "false";
-    }, kind === "error" ? 7000 : 4200);
-  }
-
-  function announce(message) {
-    var el = $("#sr-status");
-    if (!el) return;
-    el.textContent = "";
-    requestAnimationFrame(function () { el.textContent = message; });
-  }
-
-  function confirmAction(options) {
-    var opts = options || {};
-    return new Promise(function (resolve) {
-      var dialog = $("#confirm-dialog");
-      $("#confirm-title").textContent = opts.title || "确认";
-      $("#confirm-body").innerHTML = opts.body || "";
-      $("#confirm-code").textContent = opts.code || "";
-      var okBtn = $("#confirm-ok");
-      okBtn.textContent = opts.confirmLabel || "确认";
-      okBtn.className = "btn " + (opts.danger === false ? "btn--primary" : "btn--danger");
-
-      var settled = false;
-      function finish(value) {
-        if (settled) return;
-        settled = true;
-        okBtn.removeEventListener("click", onOk);
-        $("#confirm-cancel").removeEventListener("click", onCancel);
-        dialog.removeEventListener("close", onClose);
-        if (dialog.open) dialog.close();
-        resolve(value);
-      }
-      function onOk() { finish(true); }
-      function onCancel() { finish(false); }
-      function onClose() { finish(false); }
-
-      okBtn.addEventListener("click", onOk);
-      $("#confirm-cancel").addEventListener("click", onCancel);
-      dialog.addEventListener("close", onClose);
-      dialog.showModal();
-    });
-  }
-
-  function askExternalAck(err) {
-    return new Promise(function (resolve) {
-      var dialog = $("#external-ack");
-      var meta = app.meta || {};
-      var activity = meta.external_activity;
-      var detailBits = "";
-      if (activity && typeof activity === "object") {
-        var bits = [];
-        if (activity.stage) bits.push("阶段 " + esc(stageCn(resolveStageName(activity.stage) || activity.stage)));
-        if (activity.event) bits.push("事件 " + esc(eventCn(String(activity.event))));
-        if (Number.isFinite(activity.age_seconds)) bits.push("最近写入 " + Math.round(activity.age_seconds) + " 秒前");
-        if (bits.length) detailBits = "<p class=\"mono\">" + bits.join(" · ") + "</p>";
-      }
-      var diag = "";
-      if (err && (err.message || err.detail)) {
-        diag = '<details class="error-diag"><summary>诊断信息（英文原文）</summary><pre>' +
-          esc([err.message, err.detail].filter(Boolean).join("\n\n")) + "</pre></details>";
-      }
-      $("#ack-body").innerHTML =
-        "<p>进度日志在最近 <strong>120 秒</strong>内有写入，但当前没有 Web 作业在运行。</p>" +
-        "<p>可能有人在终端直接运行了 <span class=\"mono\">subgen</span>。两个进程同时运行会争用阶段汇总文件、共享临时目录和发布临时文件。</p>" +
-        detailBits +
-        "<p>确认后仍要创建作业吗？</p>" + diag;
-
-      var settled = false;
-      function finish(value) {
-        if (settled) return;
-        settled = true;
-        $("#ack-confirm").removeEventListener("click", onConfirm);
-        $("#ack-cancel").removeEventListener("click", onCancel);
-        dialog.removeEventListener("close", onClose);
-        if (dialog.open) dialog.close();
-        resolve(value);
-      }
-      function onConfirm() { finish(true); }
-      function onCancel() { finish(false); }
-      function onClose() { finish(false); }
-
-      $("#ack-confirm").addEventListener("click", onConfirm);
-      $("#ack-cancel").addEventListener("click", onCancel);
-      dialog.addEventListener("close", onClose);
-      dialog.showModal();
-    });
-  }
-
-
-  function errorCopyFor(err) {
-    if (err && err.code && ERROR_COPY[err.code]) return ERROR_COPY[err.code];
-    if (err && err.name === "OfflineError") return ERROR_COPY.offline;
-    if (err && err.status >= 500) return ERROR_COPY.internal_error;
-    return { title: "请求失败", hint: "服务返回了未预期的错误。" };
-  }
-
-  function errorHtml(err, options) {
-    var opts = options || {};
-    var copy = errorCopyFor(err);
-    var status = err && err.status ? (err.code + " · HTTP " + err.status) : (err && err.code ? err.code : "");
-    var fields = (err && Array.isArray(err.fields)) ? err.fields : [];
-    var diag = [];
-    if (err && err.message) diag.push(err.message);
-    if (err && err.detail) diag.push(typeof err.detail === "string" ? err.detail : JSON.stringify(err.detail, null, 2));
-    var actions = opts.actions || "";
-
-    return '<div class="error-block" role="alert">' +
-      '<div class="error-head">' +
-      '<span class="error-mark" aria-hidden="true">!</span>' +
-      '<span class="error-title">' + esc(copy.title) + "</span>" +
-      '<span class="error-code mono">' + esc(status) + "</span>" +
-      "</div>" +
-      '<p class="error-hint">' + copy.hint + "</p>" +
-      (fields.length ? '<div class="error-fields">' + fields.map(function (item) {
-        return "<span>" + (item.field ? "<b>" + esc(item.field) + "</b> " : "") + esc(item.message) + "</span>";
-      }).join("") + "</div>" : "") +
-      (actions ? '<div class="error-actions">' + actions + "</div>" : "") +
-      (diag.length ? '<details class="error-diag"><summary>诊断信息（英文原文）</summary><pre>' + esc(diag.join("\n\n")) + "</pre></details>" : "") +
-      "</div>";
-  }
-
-
-  function activeJobId(meta) {
-    if (!meta || typeof meta !== "object") return null;
-    if (typeof meta.active_job_id === "string" && meta.active_job_id) return meta.active_job_id;
-    if (meta.active_job && typeof meta.active_job === "object" && meta.active_job.job_id) return meta.active_job.job_id;
-    if (typeof meta.active_job === "string" && meta.active_job) return meta.active_job;
-    return null;
-  }
-
-  function metaSettingsOk(meta) {
-    if (!meta) return true;
-    if (meta.settings && typeof meta.settings === "object" && typeof meta.settings.settings_ok === "boolean") {
-      return meta.settings.settings_ok;
-    }
-    if (typeof meta.settings_ok === "boolean") return meta.settings_ok;
-    if (typeof meta.load_error === "string" && meta.load_error) return false;
-    if (typeof meta.settings_load_error === "string" && meta.settings_load_error) return false;
-    return true;
-  }
-
-  function metaInventoryText(meta) {
-    if (!meta) return "—";
-    var inventory = meta.inventory !== undefined ? meta.inventory : (meta.inventory_info || meta.inventory_summary);
-    if (inventory === null || inventory === undefined) return "—";
-    if (typeof inventory === "number") return fmtNum(inventory) + " 条";
-    if (typeof inventory === "string") return inventory;
-    if (typeof inventory === "object") {
-      if (Number.isFinite(inventory.count)) return fmtNum(inventory.count) + " 条";
-      if (Number.isFinite(inventory.total)) return fmtNum(inventory.total) + " 条";
-      if (inventory.exists === false) return "未发现";
-      if (inventory.ok === false || inventory.valid === false) return "不可用";
-      if (inventory.exists === true) return "已发现";
-    }
-    return "—";
-  }
-
-  function metaWorkRoot(meta) {
-    if (!meta) return "—";
-    if (typeof meta.work_root === "string" && meta.work_root) return meta.work_root;
-    if (meta.paths && meta.paths.work_root) return meta.paths.work_root;
-    if (meta.config && meta.config.work_root) return meta.config.work_root;
-    return "—";
-  }
-
-  function describeConnectionError(err) {
-    if (!err) return "";
-    if (err.name === "OfflineError") return err.message;
-    var bits = [];
-    if (err.code) bits.push(err.code);
-    if (err.status) bits.push("HTTP " + err.status);
-    if (err.message) bits.push(err.message);
-    return bits.join(" · ");
-  }
-
-  function setConnection(online, err) {
-    var wasOffline = !app.metaOnline;
-    app.metaOnline = online;
-    var conn = $("#conn");
-    var banner = $("#offline-banner");
-    if (online) {
-      conn.dataset.conn = "online";
-      $("#conn-text").textContent = "在线";
-      banner.hidden = true;
-      if (wasOffline) toast("已重新连接本地服务", "success");
-    } else {
-      conn.dataset.conn = "offline";
-      $("#conn-text").textContent = "离线";
-      banner.hidden = false;
-      $("#offline-detail").textContent = describeConnectionError(err);
-    }
-    renderPollState();
-  }
-
-  function renderPollState() {
-    var el = $("#meta-poll");
-    if (!el) return;
-    if (document.hidden) {
-      el.textContent = "已暂停 · 标签页隐藏";
-      return;
-    }
-    if (!app.metaOnline) {
-      el.textContent = "重试中 · 5s";
-      return;
-    }
-    var stamp = app.metaPolledAt ? fmtClock(app.metaPolledAt / 1000) : "—";
-    el.textContent = stamp + " · 5s";
-  }
-
-  function renderMeta() {
-    var meta = app.meta || {};
-    var workRoot = metaWorkRoot(meta);
-    var workEl = $("#meta-work-root");
-    workEl.textContent = workRoot;
-    workEl.title = workRoot;
-
-    $("#meta-inventory").textContent = metaInventoryText(meta);
-
-    var activeId = activeJobId(meta);
-    var activeEl = $("#meta-active");
-    if (activeId) {
-      var activeState = meta.active_job && typeof meta.active_job === "object" ? meta.active_job.state : "";
-      activeEl.innerHTML = '<a href="#/jobs/' + encodeURIComponent(activeId) + '">' + esc(activeId) + "</a>" +
-        (activeState ? " · " + esc(STATE_CN[activeState] || activeState) : "");
-    } else {
-      activeEl.textContent = "无";
-    }
-
-    var settingsEl = $("#meta-settings");
-    if (metaSettingsOk(meta)) {
-      settingsEl.innerHTML = '<a href="#/settings">正常</a>';
-      settingsEl.className = "stat-v";
-    } else {
-      settingsEl.innerHTML = '<a href="#/settings">无法加载</a>';
-      settingsEl.className = "stat-v is-bad";
-    }
-
-    $("#conn").dataset.conn = app.metaOnline ? "online" : "offline";
-    $("#conn-text").textContent = app.metaOnline ? "在线" : "离线";
-    app.activeJobId = activeId;
-    renderRunStrip(meta, activeId);
-    renderPollState();
-    syncCreateLock();
-    renderJobListCount();
-  }
-
-  function renderRunStrip(meta, activeId) {
-    var strip = $("#run-strip");
-    if (!strip) return;
-    if (!activeId) {
-      strip.hidden = true;
-      return;
-    }
-    strip.hidden = false;
-    strip.dataset.live = "true";
-    var progress = meta.active_job && typeof meta.active_job === "object" ? meta.active_job.progress : null;
-    var pct = null;
-    if (progress && Number.isFinite(progress.total) && progress.total > 0) {
-      pct = clampPercent(num(progress.done) || 0, progress.total);
-    }
-    strip.querySelector("i").style.setProperty("--p", (pct === null ? 2 : Math.max(pct, 1.5)) + "%");
-  }
-
-  function refreshMeta() {
-    return requestJson("GET", "/api/meta").then(function (data) {
-      app.meta = data || {};
-      app.metaError = null;
-      app.metaPolledAt = Date.now();
-      setConnection(true);
-      renderMeta();
-      if (app.route.name === "jobs" && app.jobsLoaded) refreshJobs({ quiet: true });
-    }).catch(function (err) {
-      app.metaError = err;
-      app.metaPolledAt = Date.now();
-      setConnection(false, err);
-      renderPollState();
-    });
-  }
-
-  function scheduleMeta(delay) {
-    clearTimeout(app.metaTimer);
-    app.metaTimer = setTimeout(function () {
-      if (document.hidden) {
-        scheduleMeta(2000);
-        return;
-      }
-      refreshMeta().then(function () {
-        scheduleMeta(META_INTERVAL);
-      });
-    }, delay === undefined ? META_INTERVAL : delay);
-  }
-
-
-  function normalizeJobList(data) {
-    if (Array.isArray(data)) return data;
-    if (data && Array.isArray(data.jobs)) return data.jobs;
-    return [];
-  }
-
-  function jobScopeText(job) {
-    var params = job.params || job.plan || {};
-    return paramChips(params).join(" · ");
-  }
-
-  function jobProgressHtml(job) {
-    var state = job.state || "queued";
-    if (state === "dry_run") {
-      return '<span class="progress-num">试运行 · ' + plannedCommandCount(job) + " 条命令</span>";
-    }
-    var progress = job.progress && typeof job.progress === "object" ? job.progress : null;
-    if (!progress || (!Number.isFinite(progress.done) && !Number.isFinite(progress.total))) {
-      return '<span class="progress-num">—</span>';
-    }
-    var done = Number.isFinite(progress.done) ? progress.done : 0;
-    var total = Number.isFinite(progress.total) ? progress.total : null;
-    var pct = clampPercent(done, total);
-    var approx = progress.exact === false ? "约 " : "";
-    var bar = '<span class="progress" data-state="' + esc(state) + '" role="progressbar"' +
-      (total !== null ? ' aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + done + '"' : "") +
-      '><i style="--p:' + (pct === null ? 0 : pct) + '%"></i></span>';
-    var label = approx + "<b>" + fmtNum(done) + "</b>" + (total !== null ? " / " + fmtNum(total) : "");
-    if (progress.failed > 0) {
-      label += ' · <span class="fail">失败 ' + fmtNum(progress.failed) + "</span>";
-    }
-    return bar + '<span class="progress-num">' + label + "</span>";
-  }
-
-  function jobRowHtml(job) {
-    var id = job.job_id || job.id || "";
-    var state = job.state || "queued";
-    var stage = job.current_stage || job.current || null;
-    var stageName = resolveStageName(stage) || stage;
-    var active = isActiveState(state);
-    var actions = ['<a class="job-row-open" href="#/jobs/' + encodeURIComponent(id) + '">打开</a>'];
-    if (active) {
-      actions.push('<button class="row-action" type="button" data-action="cancel" data-job="' + esc(id) + '">取消</button>');
-    } else {
-      actions.push('<button class="row-action" type="button" data-action="rerun" data-job="' + esc(id) + '">重跑</button>');
-      actions.push('<button class="row-action row-action--danger" type="button" data-action="delete" data-job="' + esc(id) + '">删除</button>');
-    }
-
-    return '<li class="job-row" data-testid="job-row" data-job-id="' + esc(id) + '" data-state="' + esc(state) + '">' +
-      '<div class="job-row-main">' +
-      '<div class="job-row-top">' +
-      '<span class="chip" data-state="' + esc(state) + '">' + esc(STATE_CN[state] || state) + "</span>" +
-      '<a class="job-row-id" href="#/jobs/' + encodeURIComponent(id) + '">' + esc(id) + "</a>" +
-      '<span class="job-row-time">' + esc(fmtTime(job.created_at)) + "</span>" +
-      "</div>" +
-      '<div class="job-row-meta">' +
-      '<span class="meta-stage">当前阶段 <b>' + esc(stageName ? stageCn(stageName) : "未开始") + "</b></span>" +
-      '<span class="sep">/</span>' +
-      "<span>" + esc(jobScopeText(job)) + "</span>" +
-      "</div>" +
-      '<div class="job-row-progress">' + jobProgressHtml(job) + "</div>" +
-      "</div>" +
-      '<div class="job-row-actions">' + actions.join("") + "</div>" +
-      "</li>";
-  }
-
-  function renderJobListCount() {
-    var el = $("#job-list-count");
-    if (!el) return;
-    if (!app.jobsLoaded) {
-      el.textContent = app.jobListError ? "载入失败" : "载入中";
-      return;
-    }
-    var n = app.jobs.length;
-    el.textContent = n === 0 ? "0 个作业" : n + " 个作业";
-  }
-
-  function renderJobList() {
-    var list = $("#job-list");
-    var empty = $("#job-empty");
-    if (!list || !empty) return;
-    if (!app.jobs.length) {
-      list.innerHTML = "";
-      empty.hidden = false;
-    } else {
-      empty.hidden = true;
-      list.innerHTML = app.jobs.map(jobRowHtml).join("");
-    }
-    renderJobListCount();
-  }
-
-  function refreshJobs(options) {
-    var opts = options || {};
-    if (app.jobsLoading) return Promise.resolve();
-    app.jobsLoading = true;
-    if (!opts.quiet && !app.jobsLoaded) $("#jobs-loading").hidden = false;
-
-    return requestJson("GET", "/api/jobs").then(function (data) {
-      app.jobs = normalizeJobList(data);
-      app.jobsLoaded = true;
-      if (data && typeof data === "object" && !Array.isArray(data) && data.active_job_id !== undefined) {
-        app.activeJobId = data.active_job_id;
-      }
-      app.jobListError = null;
-      $("#jobs-error").hidden = true;
-      $("#jobs-error").innerHTML = "";
-      renderJobList();
-      syncCreateLock();
-    }).catch(function (err) {
-      app.jobListError = err;
-      var box = $("#jobs-error");
-      if (err instanceof OfflineError) {
-        box.innerHTML = '<div class="notice notice--bad">' +
-          '<span class="notice-mark" aria-hidden="true">!</span>' +
-          "<div><strong>无法载入作业列表。</strong>本地服务未响应；连接恢复后会自动重试。</div></div>";
-      } else {
-        box.innerHTML = errorHtml(err);
-      }
-      box.hidden = false;
-      if (!app.jobsLoaded) $("#job-empty").hidden = true;
-      renderJobListCount();
-      renderPollState();
-    }).finally(function () {
-      app.jobsLoading = false;
-      $("#jobs-loading").hidden = true;
-    });
-  }
-
-  function findJob(jobId) {
-    for (var i = 0; i < app.jobs.length; i++) {
-      if (app.jobs[i].job_id === jobId) return app.jobs[i];
-    }
-    return null;
-  }
-
-  async function cancelJob(jobId) {
-    var job = findJob(jobId);
-    var jobLabel = jobId + (job && job.state ? " · " + (STATE_CN[job.state] || job.state) : "");
-    var ok = await confirmAction({
-      title: "取消作业",
-      code: "cancel · " + jobId,
-      confirmLabel: "取消作业",
-      body: "<p>将向 <span class=\"mono\">" + esc(jobLabel) + "</span> 的当前阶段发送 SIGINT，让阶段执行 <span class=\"mono\">KeyboardInterrupt</span> 清理。10 秒未退出会升级为 SIGTERM，再 3 秒后 SIGKILL。</p>" +
-        "<p>取消后作业状态为「已取消」，后续阶段跳过。</p>"
-    });
-    if (!ok) return;
-
-    try {
-      var data = await requestJson("POST", "/api/jobs/" + encodeURIComponent(jobId) + "/cancel", {});
-      var record = unwrapJob(data);
-      if (app.detail && app.detail.id === jobId && record) {
-        app.detail.record = mergeRecord(app.detail.record, record);
-        updateDetailLive();
-        scheduleDetail(600);
-      }
-      toast("已请求取消，等待阶段退出", "info");
-      announce("已请求取消作业");
-      refreshJobs({ quiet: true });
-      refreshMeta();
-    } catch (err) {
-      showJobActionError(err);
-    }
-  }
-
-  async function rerunJob(jobId, fromDetail) {
-    try {
-      var data = await requestJson("POST", "/api/jobs/" + encodeURIComponent(jobId) + "/rerun", {});
-      var record = unwrapJob(data);
-      toast("已创建重跑作业", "success");
-      refreshJobs({ quiet: true });
-      if (record && record.job_id) {
-        location.hash = "#/jobs/" + encodeURIComponent(record.job_id);
-      } else {
-        refreshJobs({ quiet: true });
-      }
-      refreshMeta();
-    } catch (err) {
-      showJobActionError(err);
-    }
-  }
-
-  async function deleteJob(jobId) {
-    var ok = await confirmAction({
-      title: "删除作业",
-      code: "delete · " + jobId,
-      confirmLabel: "删除作业",
-      body: "<p>将删除作业 <span class=\"mono\">" + esc(jobId) + "</span> 的记录与日志。流水线产物不会被删除。</p>" +
-        "<p>此操作不可撤销。</p>"
-    });
-    if (!ok) return;
-
-    try {
-      await requestJson("DELETE", "/api/jobs/" + encodeURIComponent(jobId), {});
-      toast("已删除作业记录与日志", "success");
-      announce("已删除作业");
-      if (app.route.name === "detail" && app.route.id === jobId) {
-        location.hash = "#/jobs";
-      }
-      refreshJobs({ quiet: true });
-      refreshMeta();
-    } catch (err) {
-      showJobActionError(err);
-    }
-  }
-
-  function showJobActionError(err) {
-    if (app.detail && app.route.name === "detail") {
-      app.detail.actionError = err;
-      renderDetailError();
-      return;
-    }
-    var box = $("#jobs-error");
-    if (box) {
-      box.innerHTML = errorHtml(err);
-      box.hidden = false;
-    }
-    if (err instanceof OfflineError) toast("无法连接本地服务", "error");
-  }
-
-
-  function newClientToken() {
+  function newToken() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return window.crypto.randomUUID();
     }
-    var bytes = new Uint8Array(16);
-    window.crypto.getRandomValues(bytes);
-    return Array.prototype.map.call(bytes, function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+    return `job-${Date.now()}-${Math.random().toString(16).slice(2, 12)}`;
   }
 
-  function createFormEls() {
-    return {
-      form: $("#create-form"),
-      limit: $("#create-limit"),
-      videoIds: $("#create-video-ids"),
-      asrBatch: $("#create-asr-batch"),
-      alignBatch: $("#create-align-batch"),
-      skipInventory: $("#create-skip-inventory"),
-      skipExtract: $("#create-skip-extract"),
-      dryRun: $("#create-dry-run"),
-      submit: $("#create-submit"),
-      error: $("#create-error")
+  function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+
+  class ApiError extends Error {
+    constructor(options) {
+      super(options.message || "request failed");
+      this.status = options.status || 0;
+      this.code = options.code || "error";
+      this.fields = options.fields || {};
+      this.detail = options.detail || "";
+    }
+
+    get offline() {
+      return this.status === 0;
+    }
+  }
+
+  async function api(method, path, body) {
+    const init = {
+      method,
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
     };
-  }
-
-  function readCreateForm() {
-    var els = createFormEls();
-    var errors = {};
-    var params = {
-      limit: null,
-      video_ids: [],
-      skip_inventory: !!els.skipInventory.checked,
-      skip_extract: !!els.skipExtract.checked,
-      dry_run: !!els.dryRun.checked,
-      asr_batch_size: 32,
-      alignment_batch_size: 16
-    };
-
-    var limitRaw = els.limit.value.trim();
-    if (limitRaw !== "") {
-      if (!/^\d+$/.test(limitRaw)) errors.limit = "限流数量必须是非负整数。";
-      else params.limit = parseInt(limitRaw, 10);
+    if (method !== "GET" && method !== "HEAD") {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body === undefined ? {} : body);
     }
-
-    var rawIds = els.videoIds.value.split(/[\s,]+/).filter(Boolean);
-    for (var i = 0; i < rawIds.length; i++) {
-      if (!/^[0-9a-f]{64}$/.test(rawIds[i])) {
-        errors.video_ids = "第 " + (i + 1) + " 个 ID 不是 64 位小写十六进制。";
-        break;
+    let response;
+    try {
+      response = await fetch(path, init);
+    } catch (error) {
+      throw new ApiError({ status: 0, code: "offline", message: "无法连接本地服务" });
+    }
+    let text = "";
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw new ApiError({ status: 0, code: "offline", message: "读取响应时连接断开" });
+    }
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (error) {
+        if (response.ok) {
+          throw new ApiError({ status: response.status, code: "bad_json", message: "响应不是 JSON" });
+        }
       }
     }
-    params.video_ids = rawIds;
-
-    var asrRaw = els.asrBatch.value.trim();
-    if (!/^\d+$/.test(asrRaw) || parseInt(asrRaw, 10) < 1) errors.asr_batch_size = "ASR 批大小必须是至少 1 的整数。";
-    else params.asr_batch_size = parseInt(asrRaw, 10);
-
-    var alignRaw = els.alignBatch.value.trim();
-    if (!/^\d+$/.test(alignRaw) || parseInt(alignRaw, 10) < 1) errors.alignment_batch_size = "对齐批大小必须是至少 1 的整数。";
-    else params.alignment_batch_size = parseInt(alignRaw, 10);
-
-    return { params: params, errors: Object.keys(errors).length ? errors : null };
-  }
-
-  function clearCreateFeedback() {
-    var els = createFormEls();
-    els.error.hidden = true;
-    els.error.innerHTML = "";
-    $$("[data-create-error]").forEach(function (el) {
-      el.hidden = true;
-      el.textContent = "";
-    });
-    $$("#create-form input, #create-form textarea").forEach(function (el) {
-      el.removeAttribute("aria-invalid");
-    });
-  }
-
-  function showCreateErrors(errors) {
-    var els = createFormEls();
-    var first = null;
-    Object.keys(errors).forEach(function (field) {
-      var holder = $('[data-create-error="' + field + '"]');
-      if (holder) {
-        holder.textContent = errors[field];
-        holder.hidden = false;
-      }
-      var input = els.form.querySelector('[name="' + field + '"]');
-      if (input) {
-        input.setAttribute("aria-invalid", "true");
-        if (!first) first = input;
-      }
-    });
-    if (first) first.focus();
-  }
-
-  function setCreateError(html) {
-    var els = createFormEls();
-    els.error.innerHTML = html;
-    els.error.hidden = false;
-    els.error.scrollIntoView({ block: "nearest" });
-  }
-
-  function setCreateBusy(busy) {
-    var els = createFormEls();
-    app.createBusy = busy;
-    els.submit.disabled = busy;
-    els.submit.textContent = busy ? "创建中…" : "创建作业";
-    els.form.setAttribute("aria-busy", busy ? "true" : "false");
-  }
-
-  function resetCreateForm() {
-    var els = createFormEls();
-    els.limit.value = "";
-    els.videoIds.value = "";
-    ["skipInventory", "skipExtract", "dryRun"].forEach(function (key) {
-      els[key].checked = false;
-    });
-    clearCreateFeedback();
-  }
-
-  function setCreateFormDisabled(disabled) {
-    var els = createFormEls();
-    $$("#create-form input, #create-form textarea").forEach(function (el) {
-      el.disabled = disabled;
-    });
-    els.submit.disabled = disabled || app.createBusy;
-  }
-
-  function syncCreateLock() {
-    var lock = $("#create-lock");
-    var link = $("#create-lock-link");
-    var notice = $("#create-settings-notice");
-    if (!lock || !link || !notice) return;
-
-    var active = activeJobId(app.meta);
-    var settingsOk = metaSettingsOk(app.meta);
-    var busy = app.createBusy;
-
-    if (active) {
-      lock.hidden = false;
-      link.href = "#/jobs/" + encodeURIComponent(active);
-      link.textContent = "打开当前作业 →";
-    } else {
-      lock.hidden = true;
-    }
-
-    notice.hidden = settingsOk;
-    setCreateFormDisabled(!!active || !settingsOk);
-    if (busy) setCreateBusy(true);
-  }
-
-  function submitCreate(options) {
-    var opts = options || {};
-    if (app.createBusy) return;
-    clearCreateFeedback();
-
-    var parsed = readCreateForm();
-    if (parsed.errors) {
-      showCreateErrors(parsed.errors);
-      return;
-    }
-    if (!app.pendingCreateToken) app.pendingCreateToken = newClientToken();
-
-    var payload = {
-      params: parsed.params,
-      client_token: app.pendingCreateToken
-    };
-    if (opts.acknowledgeExternal) payload.acknowledge_external = true;
-
-    setCreateBusy(true);
-
-    requestJson("POST", "/api/jobs", payload).then(function (data) {
-      var record = unwrapJob(data);
-      app.pendingCreateToken = null;
-      setCreateBusy(false);
-      resetCreateForm();
-      var deduplicated = data && data.deduplicated === true;
-      toast(deduplicated ? "复用了已创建的作业" : "已创建作业", "success");
-      announce("已创建作业");
-      refreshMeta();
-      refreshJobs({ quiet: true });
-      if (record && record.job_id) {
-        location.hash = "#/jobs/" + encodeURIComponent(record.job_id);
-      } else {
-        refreshJobs({ quiet: true });
-      }
-    }).catch(function (err) {
-      setCreateBusy(false);
-
-      if (err instanceof OfflineError) {
-        setConnection(false, err);
-        setCreateError(errorHtml(err));
-        return;
-      }
-
-      if (err.code === "external_activity" && !opts.acknowledgeExternal) {
-        askExternalAck(err).then(function (accepted) {
-          if (accepted) {
-            submitCreate({ acknowledgeExternal: true });
-          } else {
-            app.pendingCreateToken = null;
-            toast("已取消创建", "info");
-          }
-        });
-        return;
-      }
-
-      if (err.code === "invalid_params" && err.fields.length) {
-        var fieldErrors = {};
-        err.fields.forEach(function (item) {
-          var key = item.field.replace(/^.*\./, "");
-          fieldErrors[key] = item.message;
-        });
-        showCreateErrors(fieldErrors);
-      }
-
-      if (err.code === "job_running" || err.code === "settings_invalid" || err.code === "restart_required") {
-        refreshMeta();
-        refreshJobs({ quiet: true });
-      }
-
-      // A rejected create never produced a job; mint a fresh token next time.
-      app.pendingCreateToken = null;
-      setCreateError(errorHtml(err));
-    });
-  }
-
-
-  function detailSkeleton() {
-    return '<div class="detail-skeleton" aria-hidden="true">' +
-      '<div class="bar"></div><div class="bar bar--tall"></div><div class="bar"></div>' +
-      "</div>";
-  }
-
-  function renderDetailError() {
-    var box = $("#detail-error");
-    var d = app.detail;
-    if (!box || !d) return;
-    var parts = [];
-    var record = d.record;
-    if (record && record.state === "failed") parts.push(failureHtml(record));
-    else if (record && record.state === "interrupted") parts.push(interruptedHtml(record));
-    else if (record && record.state === "cancelled") parts.push(cancelledHtml(record));
-    if (d.actionError) parts.push(errorHtml(d.actionError));
-    box.innerHTML = parts.join("");
-    box.hidden = parts.length === 0;
-    $$(".failure-tail pre", box).forEach(function (pre) {
-      pre.scrollTop = pre.scrollHeight;
-    });
-  }
-
-  function logTailLines(count) {
-    var d = app.detail;
-    if (!d || !d.log) return [];
-    var lines = d.log.replace(/\r\n/g, "\n").split("\n");
-    while (lines.length && lines[lines.length - 1] === "") lines.pop();
-    return lines.slice(-count);
-  }
-
-  function failureHtml(record) {
-    var stages = Array.isArray(record.stages) ? record.stages : [];
-    var failedStage = null;
-    for (var i = 0; i < stages.length; i++) {
-      if (stageStatus(stages[i]) === "failed") { failedStage = stages[i]; break; }
-    }
-    var failedName = failedStage ? (resolveStageName(failedStage.name || failedStage.stage) || failedStage.name || failedStage.stage) : null;
-    var exitCode = failedStage && failedStage.exit_code !== undefined && failedStage.exit_code !== null
-      ? failedStage.exit_code
-      : record.exit_code;
-    var counters = stageCounters(failedStage);
-    var stageError = failedStage && failedStage.error ? String(failedStage.error) : (record.error ? String(record.error) : "");
-    var tail = logTailLines(10);
-    var laterSkipped = false;
-    if (failedStage) {
-      var idx = STAGES.findIndex(function (s) { return s.name === failedName; });
-      for (var j = idx + 1; j < stages.length; j++) {
-        if (stageStatus(stages[j]) === "skipped") { laterSkipped = true; break; }
-      }
-    }
-
-    return '<div class="failure" role="alert">' +
-      '<div class="failure-head">' +
-      '<span class="failure-mark" aria-hidden="true">!</span>' +
-      "<h3>作业失败</h3>" +
-      '<span class="chip" data-state="failed">失败</span>' +
-      "</div>" +
-      '<div class="failure-body">' +
-      "<p>阶段 <strong>" + esc(failedName ? stageNum(failedName) + " " + stageCn(failedName) : "未知") + "</strong>" +
-      " 以退出码 <span class=\"mono\">" + esc(exitCode === null || exitCode === undefined ? "未知" : exitCode) + "</span> 结束。" +
-      (laterSkipped ? "后续阶段已跳过。" : "") + "</p>" +
-      (!counters ? '<p class="counts-note">该阶段没有写入终止进度行，因此没有阶段计数；以下是退出码与日志尾部。</p>' : "") +
-      (stageError ? "<p class=\"mono\">" + esc(stageError) + "</p>" : "") +
-      '<div class="failure-tail">' +
-      '<div class="mini-head">日志尾部<span class="mono">' + (tail.length ? "末 " + tail.length + " 行" : "尚未读取") + "</span></div>" +
-      "<pre>" + (tail.length ? esc(tail.join("\n")) : "暂无日志内容。重新运行 subgen web 时作业日志仍保留在 state/web/jobs/ 下。") + "</pre>" +
-      "</div></div></div>";
-  }
-
-  function interruptedHtml(record) {
-    var reason = reasonCn(record.reason);
-    return '<div class="notice notice--bad">' +
-      '<span class="notice-mark" aria-hidden="true">!</span>' +
-      "<div><strong>作业已中断。</strong>当前阶段被标记为中断，后续阶段跳过。服务崩溃或停止不会删除任何流水线产物。" +
-      (reason ? "原因：<span class=\"mono\">" + esc(reason) + "</span>。" : "") +
-      "可以重跑作业继续处理。" +
-      "</div></div>";
-  }
-
-  function cancelledHtml(record) {
-    var reason = reasonCn(record.reason);
-    return '<div class="notice">' +
-      '<span class="notice-mark" aria-hidden="true">·</span>' +
-      "<div><strong>作业已取消。</strong>取消请求优先于阶段退出码，后续阶段没有启动。" +
-      (reason ? "原因：<span class=\"mono\">" + esc(reason) + "</span>。" : "") +
-      "</div></div>";
-  }
-
-  function dryPanelHtml(record) {
-    var stages = Array.isArray(record.stages) ? record.stages : [];
-    var rows = stages.filter(function (stage) {
-      return Array.isArray(stage.argv) && stage.argv.length;
-    }).map(function (stage) {
-      var name = resolveStageName(stage.name || stage.stage) || stage.name || stage.stage;
-      var argv;
-      if (Array.isArray(stage.argv)) {
-        argv = stage.argv.map(function (part) { return String(part); }).join(" ");
-      } else {
-        argv = String(stage.argv || "");
-      }
-      return '<div class="cmd-row">' +
-        '<div class="cmd-stage">' + stageNum(name) + " " + esc(stageCn(name)) + '<span class="mono">' + esc(name) + "</span></div>" +
-        '<pre class="cmd-argv">' + esc(argv) + "</pre>" +
-        "</div>";
-    });
-    if (!rows.length) {
-      return '<section class="panel dry-panel"><header class="panel-head"><h2>试运行命令</h2></header>' +
-        '<div class="panel-body counts-note">作业记录中没有命令清单。</div></section>';
-    }
-    return '<section class="panel dry-panel" aria-labelledby="dry-title">' +
-      '<header class="panel-head"><h2 id="dry-title">试运行命令</h2>' +
-      '<span class="panel-hint">已记录 · 未执行</span></header>' +
-      '<div class="cmd-list">' + rows.join("") + "</div></section>";
-  }
-
-  function railLinkState(record, index) {
-    var stage = stageEntry(record, STAGES[index].name);
-    var status = stageStatus(stage);
-    if (index >= STAGES.length - 1) return "none";
-    if (status === "succeeded") return "filled";
-    if (status === "failed" || status === "cancelled") return "break";
-    if (status === "running") return "live";
-    return "idle";
-  }
-
-  function counterPairs(counters, limit) {
-    if (!counters || typeof counters !== "object") return [];
-    var pairs = [];
-    COUNTER_ORDER.forEach(function (key) {
-      if (Number.isFinite(counters[key]) && counters[key] !== undefined) {
-        pairs.push([key, counters[key]]);
-      }
-    });
-    if (pairs.length < (limit || 3)) {
-      Object.keys(counters).forEach(function (key) {
-        if (pairs.some(function (pair) { return pair[0] === key; })) return;
-        if (Number.isFinite(counters[key])) pairs.push([key, counters[key]]);
+    if (!response.ok) {
+      const envelope = data && data.error ? data.error : {};
+      throw new ApiError({
+        status: response.status,
+        code: envelope.code || `http_${response.status}`,
+        message: envelope.message || "请求没有成功",
+        fields: envelope.fields || {},
+        detail: envelope.detail || "",
       });
     }
-    return pairs.slice(0, limit || 3);
+    return data;
   }
 
-  function railCountsHtml(record, index) {
-    var name = STAGES[index].name;
-    var stage = stageEntry(record, name);
-    var d = app.detail;
-    var status = stageStatus(stage);
-    if (!stage && record.state === "dry_run") status = "skipped";
-    var current = currentStageName(record);
-
-    if (status === "running" && current === name && d && d.live.stage === name) {
-      var live = d.live;
-      if (live.done > 0 || live.total !== null) {
-        var total = live.total === null ? "" : '<span class="dim">/</span><b>' + fmtNum(live.total) + "</b>";
-        var fail = live.failed > 0 ? ' · <b class="fail">失败 ' + fmtNum(live.failed) + "</b>" : "";
-        return '约 <b>' + fmtNum(live.done) + "</b>" + total + fail;
-      }
-      return "等待进度行…";
+  function diagnostic(error) {
+    if (!error) return "";
+    const lines = [`${error.code || "error"} (HTTP ${error.status || 0})`];
+    if (error.message) lines.push(error.message);
+    if (error.detail) lines.push(error.detail);
+    const fieldKeys = Object.keys(error.fields || {});
+    if (fieldKeys.length) {
+      lines.push(fieldKeys.map((key) => `${key}: ${error.fields[key]}`).join("\n"));
     }
+    return lines.join("\n");
+  }
 
-    var counters = stageCounters(stage);
-    if (counters) {
-      var pairs = counterPairs(counters, 3);
-      if (pairs.length) {
-        var out = [];
-        pairs.forEach(function (pair, index) {
-          var label = COUNTER_CN[pair[0]] || pair[0];
-          var isFail = pair[0].indexOf("failed") !== -1 || pair[0] === "missing_candidate" || pair[0] === "invalid_candidate";
-          var extra = index >= 2 ? ' data-extra="1"' : "";
-          if (index > 0) out.push('<span class="dim"' + (index >= 2 ? ' data-extra="1"' : "") + "> · </span>");
-          out.push('<span class="' + (isFail && pair[1] > 0 ? "fail" : "") + '"' + extra + ">" +
-            esc(label) + " <b>" + fmtNum(pair[1]) + "</b></span>");
-        });
-        return out.join("");
-      }
+  function friendlyError(error) {
+    if (!error) return "出了点问题，可以稍后重试。";
+    if (error.offline) return "连不上本地服务。确认它还在运行，页面会自动重试。";
+    switch (error.code) {
+      case "job_not_found":
+        return "这个任务不存在，可能已经被删除。";
+      case "job_running":
+        return "已经有一个任务在运行，等它结束再开始新的。";
+      case "job_not_finished":
+        return "任务还在运行，结束以后才能这样做。";
+      case "settings_invalid":
+        return "设置还没有准备好，先去设置里补全文件夹和翻译服务。";
+      case "settings_load_error":
+        return "配置文件现在读不懂，需要先修复。";
+      case "cannot_rewrite":
+        return "这份配置文件没法原地修改，需要用修复方式重写。";
+      case "settings_changed":
+        return "配置文件在别处被改动过。重新读取后再保存。";
+      case "restart_required":
+        return "文件夹改过了，需要重启一次本地服务才能生效。";
+      case "external_activity":
+        return "工作目录刚被别的程序用过，确认后可以继续。";
+      case "invalid_params":
+        return "有些参数不合适，检查后再试一次。";
+      case "invalid_settings":
+        return "有几项设置需要修改。";
+      case "job_store_error":
+        return "任务没有保存成功，可以稍后重试。";
+      case "not_found":
+        return "这个功能在当前版本里还不可用。";
+      default:
+        return error.status >= 500 ? "本地服务出错了，可以稍后重试。" : "没有成功，请检查后重试。";
     }
+  }
 
-    if (status === "succeeded" || status === "failed" || status === "cancelled") return "无计数";
-    if (status === "skipped") return "未执行";
+
+  const STAGES = [
+    { id: "inventory", label: "检查视频", phrase: "检查视频", phase: "prepare" },
+    { id: "extract", label: "提取音频", phrase: "提取音频", phase: "prepare" },
+    { id: "asr", label: "识别语音", phrase: "识别语音", phase: "recognize" },
+    { id: "alignment", label: "对齐时间", phrase: "对齐时间", phase: "recognize" },
+    { id: "translation_primary", label: "翻译成中文", phrase: "翻译成中文", phase: "translate" },
+    { id: "translation_review", label: "校对译文", phrase: "校对译文", phase: "translate" },
+    { id: "publish", label: "写入字幕", phrase: "写入字幕", phase: "done" },
+  ];
+
+  const PHASES = [
+    { id: "prepare", name: "准备", detail: "检查视频、提取音频", stages: ["inventory", "extract"] },
+    { id: "recognize", name: "识别", detail: "语音识别、对齐时间", stages: ["asr", "alignment"] },
+    { id: "translate", name: "翻译", detail: "翻译成中文、校对", stages: ["translation_primary", "translation_review"] },
+    { id: "done", name: "完成", detail: "写入字幕文件", stages: ["publish"] },
+  ];
+
+  const STAGE_BY_ID = Object.fromEntries(STAGES.map((stage) => [stage.id, stage]));
+
+  const STAGE_ALIASES = {
+    corpus_asr: "asr",
+    corpus_alignment: "alignment",
+    corpus_translation_primary: "translation_primary",
+    corpus_translation_review: "translation_review",
+    corpus_publish: "publish",
+    primary: "translation_primary",
+    review: "translation_review",
+  };
+
+  const STAGE_HEADLINE = {
+    inventory: "正在检查视频",
+    extract: "正在提取音频",
+    asr: "正在识别语音",
+    alignment: "正在对齐时间",
+    translation_primary: "正在翻译成中文",
+    translation_review: "正在校对译文",
+    publish: "正在写入字幕",
+  };
+
+  const STAGE_STATUS_LABEL = {
+    pending: "等待",
+    running: "进行中",
+    succeeded: "完成",
+    failed: "失败",
+    cancelled: "已取消",
+    interrupted: "已中断",
+    skipped: "已跳过",
+  };
+
+  const EVENT_LABEL = {
+    observed: "发现视频",
+    completed: "清单完成",
+    skipped_existing: "已有字幕，跳过",
+    skipped_no_audio: "没有音频，跳过",
+    video_completed: "视频完成",
+    batch_completed: "一批完成",
+    batch_failed: "一批失败",
+    batch_deferred: "推迟处理",
+    batch_incomplete: "这批没有做完",
+    skipped_verified: "已校验，跳过",
+    video_existing: "已有字幕，跳过",
+  };
+
+  const JOB_STATES = {
+    queued: { label: "准备开始", tone: "warm" },
+    running: { label: "进行中", tone: "running" },
+    succeeded: { label: "已完成", tone: "success" },
+    failed: { label: "未完成", tone: "danger" },
+    cancelled: { label: "已取消", tone: "muted" },
+    interrupted: { label: "已中断", tone: "muted" },
+    dry_run: { label: "试运行", tone: "dry" },
+  };
+
+  function normalizeStage(name) {
+    return STAGE_ALIASES[name] || name || "";
+  }
+
+  function stageLabel(name) {
+    const stage = STAGE_BY_ID[normalizeStage(name)];
+    return stage ? stage.label : String(name || "");
+  }
+
+  function stagePhrase(name) {
+    const stage = STAGE_BY_ID[normalizeStage(name)];
+    return stage ? stage.phrase : String(name || "");
+  }
+
+  function phaseForStage(name) {
+    const stage = STAGE_BY_ID[normalizeStage(name)];
+    return stage ? PHASES.find((phase) => phase.id === stage.phase) : null;
+  }
+
+  function jobStateMeta(state) {
+    return JOB_STATES[state] || { label: state || "未知", tone: "muted" };
+  }
+
+  function phaseStatus(job, phase) {
+    if (job.state === "dry_run") return "pending";
+    const stages = (job.stages || []).filter((stage) => phase.stages.includes(normalizeStage(stage.name)));
+    const statuses = stages.map((stage) => stage.status);
+    if (statuses.includes("failed")) return "failed";
+    if (statuses.includes("running")) return "running";
+    if (statuses.includes("cancelled")) return "cancelled";
+    if (statuses.includes("interrupted")) return "interrupted";
+    if (statuses.length && statuses.every((status) => status === "succeeded" || status === "skipped")) {
+      return statuses.some((status) => status === "succeeded") ? "succeeded" : "skipped";
+    }
+    if (statuses.some((status) => status === "succeeded")) return "running";
+    return "pending";
+  }
+
+  function phaseStateText(job, status) {
+    if (job.state === "dry_run") return "仅预览";
+    switch (status) {
+      case "running":
+        return "正在进行";
+      case "succeeded":
+        return "已完成";
+      case "failed":
+        return "在这里停下";
+      case "cancelled":
+        return "已取消";
+      case "interrupted":
+        return "已中断";
+      case "skipped":
+        return "没有进行到";
+      default:
+        return "还没有开始";
+    }
+  }
+
+  function markSvg(status) {
+    if (status === "succeeded") {
+      return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8.4l3 3 6.2-6.6"/></svg>';
+    }
+    if (status === "failed") {
+      return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 4.6l6.8 6.8M11.4 4.6l-6.8 6.8"/></svg>';
+    }
+    if (status === "cancelled" || status === "interrupted") {
+      return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8"/></svg>';
+    }
     return "";
   }
 
-  function renderRail() {
-    var d = app.detail;
-    var record = d && d.record;
-    var rail = $("#detail-rail");
-    if (!record || !rail) return;
 
-    rail.innerHTML = STAGES.map(function (stage, index) {
-      var entry = stageEntry(record, stage.name);
-      var status = stageStatus(entry);
-      if (!entry && record.state === "dry_run") status = "skipped";
-      var counts = railCountsHtml(record, index);
-      var srCounts = counts ? counts.replace(/<[^>]+>/g, " ") : "";
-      return '<div class="stage-cell" role="listitem" data-testid="stage-cell" data-stage="' + stage.name + '" data-status="' + status + '" data-link="' + railLinkState(record, index) + '">' +
-        '<div class="cell-node" aria-hidden="true">' + stage.num + "</div>" +
-        '<div class="cell-name">' + stage.cn + "</div>" +
-        '<div class="cell-id">' + stage.name + "</div>" +
-        '<div class="cell-status">' + esc(STAGE_STATUS_CN[status] || status) + "</div>" +
-        '<div class="cell-counts">' + counts + "</div>" +
-        '<span class="sr-only">第 ' + (index + 1) + " 阶段 " + stage.cn + "，" + (STAGE_STATUS_CN[status] || status) + "。" + srCounts + "</span>" +
-        "</div>";
-    }).join("");
+  const state = {
+    route: { name: "jobs" },
+    meta: null,
+    metaError: null,
+    online: null,
+    jobs: [],
+    jobsLoaded: false,
+    jobsError: null,
+    jobsBusy: false,
+    jobsSignature: "",
+    knownJobIds: new Set(),
+    activeJobId: null,
+    detailJobId: null,
+    detailBusy: false,
+    detailError: null,
+    detailTimer: null,
+    metaTimer: null,
+    settings: null,
+    settingsLoaded: false,
+    settingsError: null,
+    settingsDraft: {},
+    settingsDirty: false,
+    settingsBusy: false,
+    settingsBaseSha: "",
+    settingsSavedAt: null,
+    settingsReason: "",
+    createBusy: false,
+    createOpen: false,
+    confirmResolve: null,
+    ackResolve: null,
+    browsePath: null,
+    browseParent: null,
+    browseLoaded: false,
+    lastPlacesKey: "",
+  };
 
-    var foot = $("#detail-rail-foot");
-    if (!foot) return;
-    var current = currentStageName(record);
-    var duration = durationOf(record);
-    var currentState = STATE_CN[record.state] || record.state;
-    var progressHtml = "";
-    if (current && d.live.stage === current && d.live.total !== null) {
-      var pct = clampPercent(d.live.done, d.live.total);
-      progressHtml = '<span class="rail-prog"><span class="progress" data-state="' + esc(record.state) + '"><i style="--p:' +
-        (pct === null ? 0 : pct) + '%"></i></span><span class="mono">' +
-        fmtNum(d.live.done) + " / " + fmtNum(d.live.total) + "</span></span>";
-    }
-    var currentLabel = current ? stageNum(current) + " " + stageCn(current) : (record.state === "dry_run" ? "未启动" : (record.state === "queued" ? "等待调度" : "无"));
-    foot.innerHTML =
-      "<span>当前阶段 <strong>" + esc(currentLabel) + "</strong></span>" +
-      "<span>" + esc(currentState) + "</span>" +
-      progressHtml +
-      '<span class="mono rail-foot-push">已用 ' + esc(fmtDuration(duration)) + "</span>";
+  const detailUI = {
+    job: null,
+    stageSignature: "",
+    railSignature: "",
+    eventKeys: new Set(),
+    logText: "",
+    latestPath: "",
+    progressOffset: 0,
+    logOffset: 0,
+    logPinned: true,
+    mounted: false,
+  };
+
+
+  let toastTimer = null;
+
+  function toast(text, tone) {
+    const element = $("#toast");
+    if (!element) return;
+    element.textContent = text;
+    element.dataset.tone = tone || "info";
+    element.dataset.visible = "true";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      element.dataset.visible = "false";
+    }, 3600);
   }
 
-  function renderFacts() {
-    var d = app.detail;
-    var record = d && d.record;
-    var facts = $("#detail-facts");
-    if (!record || !facts) return;
-    var exitCode = record.exit_code;
-    var exitClass = exitCode === null || exitCode === undefined ? "" : (exitCode === 0 ? " is-good" : " is-bad");
-    facts.innerHTML = [
-      ["创建", fmtTime(record.created_at), ""],
-      ["更新", fmtTime(record.updated_at), ""],
-      ["结束", fmtTime(record.ended_at), ""],
-      ["已用", fmtDuration(durationOf(record)), ""],
-      ["退出码", exitCode === null || exitCode === undefined ? "—" : String(exitCode), exitClass],
-      ["调度", record.state === "dry_run" ? "试运行" : (record.state === "queued" ? "排队中" : (currentStageName(record) ? "第 " + (stageIndex(record) + 1) + " 阶段" : "—")), ""]
-    ].map(function (row) {
-      return '<div class="fact"><dt class="fact-k">' + esc(row[0]) + '</dt><dd class="fact-v' + row[2] + '">' + esc(row[1]) + "</dd></div>";
-    }).join("");
-    var scope = $("#detail-scope");
-    if (scope) {
-      scope.innerHTML = '<span class="scope-k">运行范围</span><span class="scope-v">' +
-        paramChips(recordParams(record)).map(function (chip) { return "<span>" + esc(chip) + "</span>"; }).join("") +
-        "</span>";
-    }
+  function announce(text) {
+    const live = $("#sr-status");
+    if (live) live.textContent = text;
   }
 
-  function terminalCountersHtml(record) {
-    var stages = Array.isArray(record.stages) ? record.stages : [];
-    var rows = [];
-    stages.forEach(function (stage) {
-      var name = resolveStageName(stage.name || stage.stage) || stage.name || stage.stage;
-      var counters = stageCounters(stage);
-      if (!counters) return;
-      var pairs = counterPairs(counters, 4);
-      if (!pairs.length) return;
-      rows.push('<div class="count-row"><span class="count-row-k">' +
-        esc(stageNum(name) + " " + stageCn(name)) +
-        '<span class="mono">' + esc(name) + "</span></span>" +
-        '<span class="count-row-v">' + pairs.map(function (pair) {
-          var isFail = pair[0].indexOf("failed") !== -1;
-          return '<span class="' + (isFail && pair[1] > 0 ? "fail" : "") + '">' +
-            esc(COUNTER_CN[pair[0]] || pair[0]) + ' <span class="dim">' + fmtNum(pair[1]) + "</span></span>";
-        }).join('<span class="dim"> · </span>') + "</span></div>");
-    });
-    return rows.join("");
-  }
-
-  function renderCounts() {
-    var d = app.detail;
-    var record = d && d.record;
-    var box = $("#detail-counts");
-    var hint = $("#counts-hint");
-    if (!record || !box) return;
-
-    var current = currentStageName(record);
-    var live = d.live;
-    var html = "";
-
-    if (record.state === "running" && current) {
-      var total = live.total;
-      var done = live.done;
-      var pct = clampPercent(done, total);
-      html += '<div class="live">' +
-        '<div class="live-k">当前阶段 · ' + esc(stageNum(current) + " " + stageCn(current)) + " · 约</div>" +
-        '<div class="live-v">' + fmtNum(done) + (total !== null ? "<span>/" + fmtNum(total) + "</span>" : "") +
-        '<em>近似</em></div>' +
-        '<div class="meter"><i style="--p:' + (pct === null ? 0 : pct) + '%"></i></div>' +
-        '<div class="live-meta">' +
-        '<span>失败 <b class="' + (live.failed > 0 ? "is-bad" : "") + '">' + fmtNum(live.failed) + "</b></span>" +
-        "<span>事件 <b>" + fmtNum(live.events) + "</b></span>" +
-        "<span>阶段已用 <b>" + esc(stageElapsed(record, current)) + "</b></span>" +
-        "</div></div>";
-      if (hint) hint.textContent = "每秒 · 近似";
-    } else if (record.state === "queued") {
-      html += '<div class="live"><div class="live-k">等待调度</div>' +
-        '<div class="live-v is-quiet">排队中</div>' +
-        '<div class="live-meta"><span>工作进程尚未领取作业</span></div></div>';
-      if (hint) hint.textContent = "排队";
-    } else if (record.state === "dry_run") {
-      html += '<div class="live"><div class="live-k">试运行</div>' +
-        '<div class="live-v is-quiet">' + plannedCommandCount(record) + " 条命令已构建</div>" +
-        '<div class="live-meta"><span>没有阶段执行，因此没有计数</span></div></div>';
-      if (hint) hint.textContent = "无计数";
-    } else {
-      html += '<div class="live"><div class="live-k">终态</div>' +
-        '<div class="live-v is-quiet">' + esc(STATE_CN[record.state] || record.state) + "</div>" +
-        '<div class="live-meta"><span>总用时 <b>' + esc(fmtDuration(durationOf(record))) + "</b></span>" +
-        "<span>退出码 <b>" + esc(record.exit_code === null || record.exit_code === undefined ? "—" : record.exit_code) + "</b></span></div></div>";
-      if (hint) hint.textContent = "终止进度行";
-    }
-
-    var counters = terminalCountersHtml(record);
-    if (counters) {
-      html += '<div class="counts-table">' + counters + "</div>";
-    } else if (record.state !== "running" && record.state !== "dry_run" && record.state !== "queued") {
-      html += '<p class="counts-note">本作业没有可用的阶段计数。' +
-        (record.state === "failed" ? "失败阶段没有写入终止进度行，页面用退出码和日志尾部代替计数。" : "阶段没有写入终止进度行，或作业在第一个阶段前就结束了。") +
-        "</p>";
-    }
-    box.innerHTML = html;
-  }
-
-  function stageElapsed(record, name) {
-    var stage = stageEntry(record, name);
-    if (!stage) return "—";
-    var start = toEpoch(stage.started_at);
-    if (start === null) return "—";
-    var end = toEpoch(stage.ended_at);
-    return fmtDuration((end === null ? Date.now() / 1000 : end) - start);
-  }
-
-  function eventRowHtml(event, fallbackStage) {
-    var stageName = resolveStageName(event.stage || fallbackStage) || event.stage || fallbackStage || "";
-    var time = event.timestamp !== undefined ? fmtClock(event.timestamp) : (event.at ? String(event.at).slice(-8) : "—");
-    var video = event.relative_path || event.video_id || "";
-    var rawEvent = String(event.event || "");
-    var failure = isFailureEvent(rawEvent);
-    return '<li class="tail-row">' +
-      '<span class="tail-time mono">' + esc(time) + "</span>" +
-      '<span class="tail-stage mono">' + esc(stageName ? stageCn(stageName) : "—") + "</span>" +
-      '<div class="tail-body">' +
-      '<span class="tail-event' + (failure ? " ev-fail" : "") + '" title="' + esc(rawEvent) + '">' + esc(eventCn(rawEvent)) + "</span>" +
-      '<span class="tail-video" title="' + esc(video || rawEvent) + '">' + esc(video || "—") + "</span>" +
-      "</div></li>";
-  }
-
-  function renderEvents() {
-    var d = app.detail;
-    var list = $("#detail-events");
-    if (!d || !list) return;
-    if (!d.events.length) {
-      list.innerHTML = '<li class="tail-empty">暂无逐视频事件。<br>作业进入阶段后会每秒追加进度行。</li>';
-    } else {
-      list.innerHTML = d.events.map(function (event) {
-        return eventRowHtml(event, event.stage);
-      }).join("");
-    }
-    var hint = $("#events-hint");
-    if (hint) hint.textContent = d.events.length ? "最近 " + d.events.length + " 条" : "最近 " + MAX_EVENTS + " 条";
-    list.scrollTop = list.scrollHeight;
-  }
-
-  function appendEvents(rows) {
-    var d = app.detail;
-    var list = $("#detail-events");
-    if (!d || !list || !rows.length) return;
-    var nearBottom = isNearBottom(list, 60);
-    var added = 0;
-
-    rows.forEach(function (event) {
-      if (!event || typeof event !== "object") return;
-      var key = eventKey(event, currentStageName(d.record));
-      if (d.eventKeys.has(key)) return;
-      d.eventKeys.add(key);
-      d.events.push(event);
-      if (added < MAX_EVENTS) {
-        list.insertAdjacentHTML("beforeend", eventRowHtml(event, currentStageName(d.record)));
-        added += 1;
-      }
-    });
-
-    if (!d.events.length) return;
-    var emptyEl = list.querySelector(".tail-empty");
-    if (emptyEl) emptyEl.remove();
-
-    while (d.events.length > MAX_EVENTS) d.events.shift();
-    while (list.children.length > MAX_EVENTS) list.removeChild(list.firstElementChild);
-
-    var hint = $("#events-hint");
-    if (hint) hint.textContent = "最近 " + d.events.length + " 条";
-    if (nearBottom) list.scrollTop = list.scrollHeight;
-  }
-
-  function renderLog() {
-    var d = app.detail;
-    var pre = $("#detail-log");
-    if (!d || !pre) return;
-    pre.textContent = d.log;
-    pre.dataset.empty = d.log ? "false" : "true";
-    if (d.following) pre.scrollTop = pre.scrollHeight;
-    updateFollowButton();
-    updateLogOffset();
-  }
-
-  function updateFollowButton() {
-    var btn = $("#follow-btn");
-    var d = app.detail;
-    if (!btn || !d) return;
-    btn.setAttribute("aria-pressed", d.following ? "true" : "false");
-    btn.textContent = d.following ? "跟随中" : "已暂停";
-  }
-
-  function updateLogOffset() {
-    var el = $("#log-offset");
-    var d = app.detail;
-    if (!el || !d) return;
-    if (d.logSince === null) {
-      el.textContent = d.log ? "偏移 —" : "偏移 0 B";
-    } else {
-      el.textContent = "偏移 " + fmtNum(d.logSince) + " B";
-    }
-  }
-
-  function applyLogChunk(chunk, reset) {
-    var d = app.detail;
-    var pre = $("#detail-log");
-    if (!d) return;
-    if (reset) {
-      d.log = "";
-      if (pre) pre.textContent = "";
-    }
-    if (typeof chunk !== "string" || !chunk) {
-      if (pre) pre.dataset.empty = d.log ? "false" : "true";
+  function renderService() {
+    const element = $("#service-status");
+    if (!element) return;
+    const text = $(".service-text", element);
+    if (state.online === null) {
+      element.dataset.state = "pending";
+      if (text) text.textContent = "正在连接本地服务";
+      element.removeAttribute("title");
       return;
     }
-    d.log += chunk;
-    if (d.log.length > MAX_LOG) d.log = d.log.slice(-MAX_LOG);
-    if (pre) {
-      if (d.log.length >= MAX_LOG) {
-        pre.textContent = d.log;
-      } else {
-        pre.appendChild(document.createTextNode(chunk));
-      }
-      pre.dataset.empty = "false";
-      if (d.following) pre.scrollTop = pre.scrollHeight;
-    }
-    updateLogOffset();
-  }
-
-  function foldLive(events, record) {
-    var d = app.detail;
-    if (!d) return;
-    var current = currentStageName(record);
-    if (!current) return;
-    if (d.live.stage !== current) {
-      d.live = { stage: current, done: 0, total: null, failed: 0, events: 0 };
-    }
-    var live = d.live;
-    events.forEach(function (event) {
-      if (!event || typeof event !== "object") return;
-      var resolved = resolveStageName(event.stage) || event.stage;
-      if (resolved !== current) return;
-      var name = String(event.event || "");
-      live.events += 1;
-      if (isFailureEvent(name)) live.failed += 1;
-
-      if (current === "inventory") {
-        if (name === "observed") live.done += 1;
-        if (name === "discovered" && Number.isFinite(event.count)) live.total = event.count;
-        return;
-      }
-      if (current === "extract") {
-        if (name === "batch_started" && Number.isFinite(event.selected)) live.total = event.selected;
-        if (name === "completed" || name === "skipped_existing" || name === "skipped_no_audio") live.done += 1;
-        return;
-      }
-      if (name === "batch_started") {
-        var total = num(event.processable);
-        if (total === null) total = num(event.selected);
-        if (total !== null) live.total = total;
-        return;
-      }
-      if (current === "publish") {
-        if (name === "video_completed") live.done += 1;
-        return;
-      }
-      if (name === "video_completed" || name === "skipped_verified") live.done += 1;
-      if ((current === "translation_primary" || current === "translation_review") && name === "video_existing") {
-        live.done += 1;
-      }
-    });
-  }
-
-  function collectStoredEvents(record) {
-    var rows = [];
-    var stages = record && Array.isArray(record.stages) ? record.stages : [];
-    stages.forEach(function (stage) {
-      var name = resolveStageName(stage.name || stage.stage) || stage.name || stage.stage;
-      stageEvents(stage).forEach(function (event) {
-        if (event && typeof event === "object") {
-          rows.push(Object.assign({}, event, { stage: event.stage || name }));
-        }
-      });
-    });
-    return rows;
-  }
-
-  function updateDetailLive() {
-    var d = app.detail;
-    var record = d && d.record;
-    if (!record) return;
-
-    var stateEl = $("#detail-state");
-    if (stateEl) {
-      stateEl.textContent = STATE_CN[record.state] || record.state;
-      stateEl.dataset.state = record.state;
-    }
-
-    renderFacts();
-    renderRail();
-    renderCounts();
-    renderDetailError();
-    updateActionState();
-
-    var toolbarState = $("#rail-state-note");
-    if (toolbarState) toolbarState.textContent = railNote(record);
-  }
-
-  function updateActionState() {
-    var d = app.detail;
-    var record = d && d.record;
-    if (!record) return;
-    var active = isActive(record);
-    var cancelBtn = $("#cancel-button");
-    var rerunBtn = $("#rerun-button");
-    var deleteBtn = $("#delete-button");
-    if (cancelBtn) {
-      cancelBtn.disabled = !active || !!d.actionBusy;
-      cancelBtn.title = active ? "取消当前阶段（SIGINT → SIGTERM → SIGKILL）" : "作业已结束";
-    }
-    if (rerunBtn) {
-      rerunBtn.disabled = active || !!d.actionBusy;
-      rerunBtn.title = active ? "运行中的作业不能重跑" : "用相同参数和当前设置创建新作业";
-    }
-    if (deleteBtn) {
-      deleteBtn.disabled = active || !!d.actionBusy;
-      deleteBtn.title = active ? "作业尚未结束，不能删除" : "删除作业记录与日志";
-    }
-  }
-
-  function bindDetailActions() {
-    var cancelBtn = $("#cancel-button");
-    var rerunBtn = $("#rerun-button");
-    var deleteBtn = $("#delete-button");
-    var followBtn = $("#follow-btn");
-    var logPre = $("#detail-log");
-
-    if (cancelBtn) cancelBtn.addEventListener("click", function () { cancelJob(app.detail.id); });
-    if (rerunBtn) rerunBtn.addEventListener("click", function () { rerunJob(app.detail.id, true); });
-    if (deleteBtn) deleteBtn.addEventListener("click", function () { deleteJob(app.detail.id); });
-
-    if (followBtn) {
-      followBtn.addEventListener("click", function () {
-        app.detail.following = !app.detail.following;
-        updateFollowButton();
-        if (app.detail.following && logPre) logPre.scrollTop = logPre.scrollHeight;
-      });
-    }
-    if (logPre) {
-      logPre.addEventListener("scroll", function () {
-        if (!app.detail) return;
-        var atBottom = isNearBottom(logPre, 30);
-        if (atBottom !== app.detail.following) {
-          app.detail.following = atBottom;
-          updateFollowButton();
-        }
-      });
-    }
-  }
-
-  function railNote(record) {
-    if (!record) return "—";
-    if (record.state === "dry_run") return "试运行 · " + plannedCommandCount(record) + " 条命令";
-    var index = stageIndex(record);
-    if (index >= 0) return "第 " + (index + 1) + " / 7 阶段";
-    return STATE_CN[record.state] || record.state;
-  }
-
-  function renderDetailShell() {
-    var d = app.detail;
-    var record = d && d.record;
-    var view = $("#job-detail");
-    if (!record || !view) return;
-
-    var params = recordParams(record);
-    var dry = record.state === "dry_run" || params.dry_run === true;
-    var stateCn = STATE_CN[record.state] || record.state;
-    var origin = record.origin_job_id
-      ? '<a class="origin-link" href="#/jobs/' + encodeURIComponent(record.origin_job_id) + '">来源 ' + esc(record.origin_job_id) + "</a>"
-      : "";
-
-    view.innerHTML =
-      '<nav class="crumbs" aria-label="面包屑"><a href="#/jobs">作业</a><span class="crumb-sep" aria-hidden="true">/</span><span class="mono">' + esc(record.job_id) + "</span></nav>" +
-      '<div class="detail-head">' +
-      '<div class="detail-ident">' +
-      '<h1 class="detail-id">' + esc(record.job_id) + "</h1>" +
-      '<div class="detail-badges">' +
-      '<span class="chip" id="detail-state" data-testid="job-state" data-state="' + esc(record.state) + '">' + esc(stateCn) + "</span>" +
-      (record.reason ? '<span class="chip chip--plain">原因 ' + esc(reasonCn(record.reason)) + "</span>" : "") +
-      origin +
-      "</div></div>" +
-      '<div class="detail-actions">' +
-      '<button class="btn btn--tiny" type="button" id="cancel-button" data-testid="cancel-button">取消</button>' +
-      '<button class="btn btn--tiny" type="button" id="rerun-button" data-testid="rerun-button">重跑</button>' +
-      '<button class="btn btn--tiny btn--danger" type="button" id="delete-button" data-testid="delete-button">删除</button>' +
-      "</div></div>" +
-      '<dl class="facts" id="detail-facts"></dl>' +
-      '<p class="detail-scope" id="detail-scope"></p>' +
-      '<div class="job-error" id="detail-error" data-testid="job-error" hidden></div>' +
-      '<section class="panel rail-panel" aria-labelledby="rail-title">' +
-      '<header class="panel-head"><h2 id="rail-title">七阶段进度</h2>' +
-      '<span class="panel-hint" id="rail-state-note">' + esc(railNote(record)) + "</span></header>" +
-      '<div class="rail" id="detail-rail" data-testid="stage-rail" role="list" aria-label="七阶段进度"></div>' +
-      '<div class="rail-foot" id="detail-rail-foot"></div>' +
-      "</section>" +
-      '<div class="detail-grid">' +
-      '<section class="panel counts-panel" aria-labelledby="counts-title">' +
-      '<header class="panel-head"><h2 id="counts-title">进度计数</h2><span class="panel-hint" id="counts-hint">—</span></header>' +
-      '<div id="detail-counts"></div>' +
-      "</section>" +
-      '<section class="panel" aria-labelledby="events-title">' +
-      '<header class="panel-head"><h2 id="events-title">逐视频事件</h2><span class="panel-hint" id="events-hint">最近 ' + MAX_EVENTS + " 条</span></header>" +
-      '<ol class="tail" id="detail-events" data-testid="event-tail"></ol>' +
-      "</section>" +
-      '<section class="panel log-panel" id="log-panel" data-testid="log-panel" aria-labelledby="log-title">' +
-      '<header class="panel-head"><h2 id="log-title">阶段日志</h2>' +
-      '<div class="log-tools"><span class="panel-hint" id="log-offset">偏移 0 B</span>' +
-      '<button class="follow-btn" type="button" id="follow-btn" aria-pressed="true">跟随中</button></div></header>' +
-      '<pre class="log-body" id="detail-log" tabindex="0" aria-label="作业日志"></pre>' +
-      "</section>" +
-      "</div>" +
-      (dry ? dryPanelHtml(record) : "");
-
-    bindDetailActions();
-    renderFacts();
-    renderRail();
-    renderCounts();
-    renderEvents();
-    renderLog();
-    renderDetailError();
-    updateActionState();
-  }
-
-  function renderDetailLoadError(err) {
-    var view = $("#job-detail");
-    if (!view) return;
-    var notFound = err && (err.code === "not_found" || err.status === 404);
-    view.innerHTML =
-      '<nav class="crumbs" aria-label="面包屑"><a href="#/jobs">作业</a><span class="crumb-sep">/</span><span class="mono">找不到作业</span></nav>' +
-      (notFound
-        ? '<div class="empty"><div class="empty-mark" aria-hidden="true">404</div><h3>找不到该作业</h3><p>它可能已被删除，或服务的工作目录已经改变。</p><p class="empty-action"><a href="#/jobs">返回作业列表 →</a></p></div>'
-        : errorHtml(err) +
-          '<p class="empty-action"><button class="btn" type="button" data-act="reload-detail">重新加载</button> ' +
-          '<a href="#/jobs">返回作业列表 →</a></p>');
-  }
-
-  function openDetail(jobId) {
-    stopDetailPoll();
-    var detail = {
-      id: jobId,
-      record: null,
-      events: [],
-      eventKeys: new Set(),
-      log: "",
-      since: null,
-      logSince: null,
-      live: { stage: null, done: 0, total: null, failed: 0, events: 0 },
-      following: true,
-      loading: true,
-      error: null,
-      actionError: null,
-      actionBusy: false,
-      polling: false
-    };
-    app.detail = detail;
-
-    var view = $("#job-detail");
-    view.innerHTML = detailSkeleton();
-
-    requestJson("GET", "/api/jobs/" + encodeURIComponent(jobId)).then(function (data) {
-      if (app.detail !== detail) return;
-      var record = unwrapJob(data);
-      if (!record) throw new ApiError({ status: 200, code: "internal_error", message: "作业响应缺少 job_id" });
-
-      detail.record = record;
-      detail.loading = false;
-      detail.lastRenderedState = record.state;
-
-      collectStoredEvents(record).slice(-MAX_EVENTS).forEach(function (event) {
-        var key = eventKey(event, currentStageName(record));
-        if (!detail.eventKeys.has(key)) {
-          detail.eventKeys.add(key);
-          detail.events.push(event);
-        }
-      });
-
-      renderDetailShell();
-
-      if (isActive(record)) {
-        scheduleDetail(700);
-      } else {
-        loadFinishedLog(detail);
-      }
-    }).catch(function (err) {
-      if (app.detail !== detail) return;
-      detail.loading = false;
-      detail.error = err;
-      if (err instanceof OfflineError) setConnection(false, err);
-      renderDetailLoadError(err);
-    });
-  }
-
-  function loadFinishedLog(detail) {
-    requestText("/api/jobs/" + encodeURIComponent(detail.id) + "/log").then(function (text) {
-      if (app.detail !== detail) return;
-      detail.log = text.length > MAX_LOG ? text.slice(-MAX_LOG) : text;
-      renderLog();
-      renderDetailError();
-    }).catch(function () {
-      // A finished job without a log file is not an error worth a banner.
-      if (app.detail !== detail) return;
-      renderLog();
-    });
-  }
-
-  function scheduleDetail(delay) {
-    clearTimeout(app.detailTimer);
-    if (document.hidden) return;
-    app.detailTimer = setTimeout(detailTick, delay === undefined ? DETAIL_INTERVAL : delay);
-  }
-
-  function stopDetailPoll() {
-    clearTimeout(app.detailTimer);
-    app.detailTimer = null;
-  }
-
-  async function detailTick() {
-    var detail = app.detail;
-    if (!detail || !detail.record) return;
-    if (document.hidden) { scheduleDetail(1500); return; }
-    if (!isActive(detail.record)) return;
-    if (detail.polling) { scheduleDetail(DETAIL_INTERVAL); return; }
-    detail.polling = true;
-
-    var nextDelay = DETAIL_INTERVAL;
-    try {
-      var query = [];
-      if (detail.since !== null) query.push("since=" + encodeURIComponent(detail.since));
-      if (detail.logSince !== null) query.push("log_since=" + encodeURIComponent(detail.logSince));
-      var path = "/api/jobs/" + encodeURIComponent(detail.id) + "/progress" + (query.length ? "?" + query.join("&") : "");
-
-      var data = await requestJson("GET", path);
-      if (app.detail !== detail) return;
-
-      var job = unwrapJob(data);
-      if (job) {
-        detail.record = mergeRecord(detail.record, job);
-      }
-      if (Number.isFinite(data.next_offset)) detail.since = data.next_offset;
-      if (Number.isFinite(data.next_log_offset)) detail.logSince = data.next_log_offset;
-
-      var events = Array.isArray(data.events) ? data.events : [];
-      foldLive(events, detail.record);
-      appendEvents(events.slice(-MAX_EVENTS));
-      applyLogChunk(typeof data.log === "string" ? data.log : "", data.log_reset === true);
-
-      var previousState = detail.lastRenderedState;
-      updateDetailLive();
-      if (previousState !== detail.record.state) {
-        announce("作业状态：" + (STATE_CN[detail.record.state] || detail.record.state));
-        detail.lastRenderedState = detail.record.state;
-      }
-
-      if (!isActive(detail.record)) {
-        await finishDetail(detail);
-        return;
-      }
-    } catch (err) {
-      if (app.detail !== detail) return;
-      if (err instanceof OfflineError) {
-        setConnection(false, err);
-        detail.actionError = err;
-        renderDetailError();
-        nextDelay = 4000;
-      } else if (err.code === "not_found") {
-        detail.actionError = err;
-        renderDetailError();
-        return;
-      } else {
-        detail.actionError = err;
-        renderDetailError();
-        nextDelay = 3000;
-      }
-    } finally {
-      detail.polling = false;
-    }
-
-    if (app.detail === detail && isActive(detail.record)) scheduleDetail(nextDelay);
-  }
-
-  async function finishDetail(detail) {
-    stopDetailPoll();
-    try {
-      var data = await requestJson("GET", "/api/jobs/" + encodeURIComponent(detail.id));
-      if (app.detail !== detail) return;
-      var record = unwrapJob(data);
-      if (record) detail.record = record;
-
-      collectStoredEvents(detail.record).forEach(function (event) {
-        var key = eventKey(event, currentStageName(detail.record));
-        if (!detail.eventKeys.has(key)) {
-          detail.eventKeys.add(key);
-          detail.events.push(event);
-        }
-      });
-      while (detail.events.length > MAX_EVENTS) detail.events.shift();
-
-      if (!detail.log) {
-        try {
-          var text = await requestText("/api/jobs/" + encodeURIComponent(detail.id) + "/log");
-          detail.log = text.length > MAX_LOG ? text.slice(-MAX_LOG) : text;
-        } catch (err) { /* the log is optional for the summary */ }
-      }
-
-      detail.actionError = null;
-      renderDetailShell();
-      var stateCn = STATE_CN[detail.record.state] || detail.record.state;
-      toast("作业" + stateCn, detail.record.state === "succeeded" || detail.record.state === "dry_run" ? "success" : "info");
-      announce("作业" + stateCn);
-      refreshMeta();
-      if (app.route.name === "jobs") refreshJobs({ quiet: true });
-    } catch (err) {
-      detail.actionError = err;
-      renderDetailError();
-      updateActionState();
-    }
-  }
-
-
-  function fieldsFromSpecs() {
-    return FIELD_SPECS.map(function (spec) {
-      return {
-        section: spec.section,
-        key: spec.key,
-        env: spec.env,
-        kind: spec.kind,
-        file_value: null,
-        effective_value: null,
-        source: "default",
-        choices: spec.choices || [],
-        error: null
-      };
-    });
-  }
-
-  function normalizeSettingsView(view) {
-    var data = view && typeof view === "object" ? view : {};
-    var rawFields = Array.isArray(data.fields) ? data.fields : [];
-    var fields = rawFields.map(function (field) {
-      if (!field || typeof field !== "object") return null;
-      var section = String(field.section || "");
-      var key = String(field.key || "");
-      if (!section || !key) return null;
-      var spec = specFor(section, key);
-      return {
-        section: section,
-        key: key,
-        env: field.env || (spec ? spec.env : ""),
-        kind: field.kind || (spec ? spec.kind : "text"),
-        file_value: field.file_value === undefined ? null : field.file_value,
-        effective_value: field.effective_value === undefined ? null : field.effective_value,
-        source: field.source || "default",
-        choices: Array.isArray(field.choices) ? field.choices : (spec && spec.choices ? spec.choices : []),
-        error: field.error || null
-      };
-    }).filter(Boolean);
-    if (!fields.length) fields = fieldsFromSpecs();
-
-    return {
-      config_path: data.config_path || "",
-      exists: data.exists !== false,
-      settings_ok: data.settings_ok !== false,
-      load_error: data.load_error || null,
-      base_sha256: data.base_sha256 === undefined ? "" : data.base_sha256,
-      api_key_configured: data.api_key_configured === true,
-      fields: fields,
-      warnings: normalizeWarnings(data.warnings)
-    };
-  }
-
-  function normalizeWarnings(warnings) {
-    if (!Array.isArray(warnings)) return [];
-    return warnings.map(function (item) {
-      if (typeof item === "string") return item;
-      if (item && typeof item === "object") {
-        return item.message || item.error || item.detail || JSON.stringify(item);
-      }
-      return String(item);
-    }).filter(Boolean);
-  }
-
-  function draftFromFields(fields) {
-    var draft = {};
-    fields.forEach(function (field) {
-      var key = field.section + "." + field.key;
-      draft[key] = field.file_value === null || field.file_value === undefined ? "" : String(field.file_value);
-    });
-    return draft;
-  }
-
-  function makeSettingsState(view) {
-    var normalized = normalizeSettingsView(view);
-    var draft = draftFromFields(normalized.fields);
-    return {
-      view: normalized,
-      draft: draft,
-      baseline: Object.assign({}, draft),
-      baseSha: normalized.base_sha256,
-      fieldErrors: {},
-      warnings: normalized.warnings.slice(),
-      preview: "",
-      valid: null,
-      validating: false,
-      pendingValidation: false,
-      saving: false,
-      error: null,
-      conflict: false,
-      loadError: normalized.load_error || (normalized.settings_ok === false ? "settings_ok=false" : null),
-      validationDiagnostic: null,
-      debounce: null,
-      lastSavedAt: null
-    };
-  }
-
-  function settingsFields() {
-    return app.settings ? app.settings.view.fields : [];
-  }
-
-  function fieldByKey(key) {
-    var fields = settingsFields();
-    for (var i = 0; i < fields.length; i++) {
-      if (fields[i].section + "." + fields[i].key === key) return fields[i];
-    }
-    return null;
-  }
-
-  function isSettingsDirty() {
-    var s = app.settings;
-    if (!s) return false;
-    return Object.keys(s.draft).some(function (key) {
-      var before = s.baseline[key] === undefined ? "" : s.baseline[key];
-      return (s.draft[key] || "") !== before;
-    });
-  }
-
-  function dirtyFieldCount() {
-    var s = app.settings;
-    if (!s) return 0;
-    return Object.keys(s.draft).filter(function (key) {
-      var before = s.baseline[key] === undefined ? "" : s.baseline[key];
-      return (s.draft[key] || "") !== before;
-    }).length;
-  }
-
-  function renderSettingsLoading() {
-    $("#settings-body").innerHTML =
-      '<div class="detail-skeleton" aria-hidden="true"><div class="bar"></div><div class="bar bar--tall"></div><div class="bar"></div></div>';
-  }
-
-  function settingsSummaryHtml() {
-    var s = app.settings;
-    var view = s.view;
-    var existsClass = view.exists ? "is-good" : "is-warn";
-    var okClass = view.settings_ok ? "is-good" : "is-bad";
-    var apiClass = view.api_key_configured ? "is-good" : "";
-    var baseClass = view.base_sha256 ? "" : "is-warn";
-    return '<section class="panel summary-panel" aria-labelledby="summary-title">' +
-      '<header class="panel-head"><h2 id="summary-title">配置文件</h2>' +
-      '<span class="panel-hint">' + esc(view.exists ? "已读取" : "文件不存在") + "</span></header>" +
-      '<div class="summary-path"><span class="k">路径</span>' + esc(view.config_path || "未定位到 subgen.toml") + "</div>" +
-      '<dl class="summary-grid">' +
-      '<div class="summary-item"><dt>文件</dt><dd class="' + existsClass + '">' + (view.exists ? "存在" : "缺失") + "</dd></div>" +
-      '<div class="summary-item"><dt>设置</dt><dd class="' + okClass + '">' + (view.settings_ok ? "可加载" : "无法加载") + "</dd></div>" +
-      '<div class="summary-item"><dt>API key</dt><dd class="' + apiClass + '">' + (view.api_key_configured ? "已配置" : "未配置") + "</dd></div>" +
-      '<div class="summary-item"><dt>base sha</dt><dd class="mono ' + baseClass + '" title="' + esc(view.base_sha256 || "") + '">' + esc(shortSha(view.base_sha256)) + "</dd></div>" +
-      "</dl></section>";
-  }
-
-  function fieldInputHtml(field, value, describedBy) {
-    var key = field.section + "." + field.key;
-    var inputId = "f-" + field.section + "-" + field.key;
-    var described = describedBy ? ' aria-describedby="' + esc(describedBy) + '"' : "";
-    var spec = specFor(field.section, field.key);
-    var label = spec ? spec.label : field.key;
-    var choices = field.choices && field.choices.length ? field.choices : (spec && spec.choices ? spec.choices : []);
-
-    if (field.kind === "enum" && choices.length) {
-      var options = '<option value=""' + (value ? "" : " selected") + ">未设置（按默认）</option>" +
-        choices.map(function (choice) {
-          return '<option value="' + esc(choice) + '"' + (String(choice) === String(value) ? " selected" : "") + ">" + esc(choice) + "</option>";
-        }).join("");
-      if (value && choices.indexOf(value) === -1) {
-        options += '<option value="' + esc(value) + '" selected>' + esc(value) + "</option>";
-      }
-      return '<select class="input field-input" id="' + inputId + '" data-testid="field-input" data-field="' + esc(key) + '" aria-label="' + esc(label) + '"' + described + ">" + options + "</select>";
-    }
-    return '<input class="input field-input" id="' + inputId + '" data-testid="field-input" data-field="' + esc(key) + '"' +
-      ' type="text" value="' + esc(value) + '" spellcheck="false" autocomplete="off" autocapitalize="off"' +
-      ' aria-label="' + esc(label) + '"' + described + ">";
-  }
-
-  function fieldRowHtml(field) {
-    var key = field.section + "." + field.key;
-    var spec = specFor(field.section, field.key);
-    var label = spec ? spec.label : field.key;
-    var help = spec ? spec.help : "";
-    var value = app.settings.draft[key] === undefined ? "" : app.settings.draft[key];
-    var source = field.source || "default";
-    var shadowed = source === "env";
-    var envName = field.env || (spec ? spec.env : "");
-    var fileValue = fmtValue(field.file_value);
-    var effective = fmtValue(field.effective_value);
-    var effectiveEmpty = field.effective_value === null || field.effective_value === undefined;
-    var hintId = "hint-" + field.section + "-" + field.key;
-    var errorId = "err-" + field.section + "-" + field.key;
-
-    return '<div class="field-row" data-field="' + esc(key) + '" data-shadowed="' + shadowed + '">' +
-      '<div class="field-top">' +
-      '<label for="f-' + esc(field.section) + "-" + esc(field.key) + '">' + esc(label) + "</label>" +
-      '<span class="field-key">' + esc(key) + "</span>" +
-      '<span class="field-source" data-testid="field-source" data-field="' + esc(key) + '" data-source="' + esc(source) + '">' +
-      esc(SOURCE_CN[source] || source) + "</span>" +
-      "</div>" +
-      fieldInputHtml(field, value, hintId + " " + errorId) +
-      '<div class="field-meta">' +
-      '<span class="m-file">文件 <b>' + esc(fileValue) + "</b></span>" +
-      '<span class="m-eff">生效 <b class="' + (effectiveEmpty ? "is-empty" : "") + '">' + esc(effective) + "</b></span>" +
-      "</div>" +
-      (help ? '<p class="field-hint" id="' + hintId + '">' + esc(help) + "</p>" : "") +
-      (shadowed && envName
-        ? '<div class="field-env">环境变量 <span class="mono">' + esc(envName) + "</span> 覆盖文件值；此处保存只写入 subgen.toml，不改变本次生效值。</div>"
-        : "") +
-      '<p class="field-error" id="' + errorId + '" data-testid="field-error" data-field="' + esc(key) + '" hidden></p>' +
-      "</div>";
-  }
-
-  function isWideField(field) {
-    if (field.kind === "path" || field.kind === "url") return true;
-    return field.section === "translation" && field.key === "api_key_env";
-  }
-
-  function settingsGroupFieldsHtml(groupFields) {
-    var html = [];
-    var pending = [];
-
-    function flush() {
-      if (!pending.length) return;
-      html.push('<div class="field-pair">' + pending.join("") + "</div>");
-      pending = [];
-    }
-
-    groupFields.forEach(function (field) {
-      if (isWideField(field)) {
-        flush();
-        html.push(fieldRowHtml(field));
-        return;
-      }
-      pending.push(fieldRowHtml(field));
-      if (pending.length === 2) flush();
-    });
-    flush();
-    return html.join("");
-  }
-
-  function settingsGroupsHtml() {
-    var sections = ["paths", "runtime", "translation"];
-    var fields = settingsFields();
-    return sections.map(function (section) {
-      var groupFields = fields.filter(function (field) { return field.section === section; });
-      if (!groupFields.length) return "";
-      return '<section class="panel settings-group" aria-labelledby="group-' + section + '">' +
-        '<header class="panel-head"><h2 id="group-' + section + '">' + esc(SECTION_CN[section] || section) + "</h2>" +
-        '<span class="group-desc">' + esc(SECTION_DESC[section] || "") + "</span>" +
-        '<span class="panel-hint">' + esc(section) + "</span></header>" +
-        settingsGroupFieldsHtml(groupFields) +
-        "</section>";
-    }).join("");
-  }
-
-  function settingsWarningsHtml() {
-    var warnings = app.settings.warnings;
-    if (!warnings.length) return "";
-    return '<section class="panel warnings-panel" aria-labelledby="warnings-title">' +
-      '<header class="panel-head"><h2 id="warnings-title">警告</h2><span class="panel-hint">不阻止保存</span></header>' +
-      '<div class="warnings">' + warnings.map(function (warning) {
-        return '<div class="warning-item">' + esc(warning) + "</div>";
-      }).join("") + "</div></section>";
-  }
-
-  function renderSettings() {
-    var s = app.settings;
-    if (!s) return;
-    var body = $("#settings-body");
-    if (!body) return;
-
-    body.innerHTML =
-      '<div class="settings-error" id="settings-error" data-testid="settings-error" hidden></div>' +
-      '<div class="settings-layout">' +
-      '<form class="settings-main" id="settings-form" data-testid="settings-form" novalidate>' +
-      settingsSummaryHtml() +
-      settingsGroupsHtml() +
-      settingsWarningsHtml() +
-      "</form>" +
-      '<aside class="settings-side">' +
-      '<section class="panel preview-wrap" aria-labelledby="preview-title">' +
-      '<header class="panel-head"><h2 id="preview-title">保存预览</h2><span class="panel-hint" id="preview-hint">校验通过后生成</span></header>' +
-      '<pre class="preview" id="settings-preview" data-testid="settings-preview" aria-live="polite"></pre>' +
-      "</section>" +
-      '<section class="panel save-panel" aria-labelledby="save-title">' +
-      '<header class="panel-head"><h2 id="save-title">保存</h2><span class="panel-hint" id="save-hint">未修改</span></header>' +
-      '<div class="panel-body">' +
-      '<div class="save-state" id="save-state" data-valid="pending"><span class="state-dot" aria-hidden="true"></span><div id="save-state-text">校验中…</div></div>' +
-      '<div class="save-actions">' +
-      '<button class="btn btn--primary" type="submit" form="settings-form" id="settings-save" data-testid="settings-save" disabled>保存</button>' +
-      '<button class="btn btn--primary" type="button" data-act="repair" data-testid="repair-action" hidden>修复并写入</button>' +
-      '<button class="btn btn--danger" type="button" data-act="force" hidden>强制写入规范 TOML</button>' +
-      "</div>" +
-      '<div class="save-meta"><span>base <b id="save-base">—</b></span><span id="save-dirty">未修改</span></div>' +
-      '<details class="save-diag" id="save-diag" hidden><summary>校验诊断（英文原文）</summary><pre id="save-diag-pre"></pre></details>' +
-      '<p class="save-note">保存会保留注释与顺序，并先把原文件备份为 subgen.toml.bak。环境变量覆盖的字段只写文件，不影响生效值。</p>' +
-      "</div></section>" +
-      "</aside></div>";
-
-    bindSettingsForm();
-    updateSettingsMeta();
-    renderSettingsErrors();
-    updateSaveState();
-  }
-
-  function bindSettingsForm() {
-    var form = $("#settings-form");
-    if (!form) return;
-    form.addEventListener("input", onSettingsInput);
-    form.addEventListener("change", onSettingsInput);
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      saveSettings(false);
-    });
-  }
-
-  function onSettingsInput(event) {
-    var s = app.settings;
-    if (!s) return;
-    var target = event.target;
-    if (!target || !target.dataset || !target.dataset.field) return;
-    var key = target.dataset.field;
-    if (!(key in s.draft)) return;
-    if (s.draft[key] === target.value) return;
-    s.draft[key] = target.value;
-    // Any edit invalidates the last verdict until the next validate round trip.
-    s.valid = null;
-    var preview = $("#settings-preview");
-    if (preview && s.preview) preview.classList.add("is-stale");
-    updateSaveState();
-    scheduleValidate(420);
-  }
-
-  function scheduleValidate(delay) {
-    var s = app.settings;
-    if (!s) return;
-    clearTimeout(s.debounce);
-    s.debounce = setTimeout(function () { validateSettings(); }, delay === undefined ? 400 : delay);
-  }
-
-  function fieldErrorMap(fields) {
-    var map = {};
-    fields.forEach(function (item) {
-      var field = String(item.field || "");
-      if (!field) return;
-      var key = field.indexOf(".") !== -1 ? field : null;
-      if (!key) {
-        var match = settingsFields().filter(function (spec) {
-          return spec.key === field;
-        })[0];
-        if (match) key = match.section + "." + match.key;
-      }
-      if (!key) key = field;
-      map[key] = item.message;
-    });
-    return map;
-  }
-
-  function validateSettings() {
-    var s = app.settings;
-    if (!s) return;
-    if (s.validating) { s.pendingValidation = true; return; }
-    s.validating = true;
-    s.validationSnapshot = JSON.stringify(s.draft);
-    updateSaveState();
-
-    var values = {};
-    Object.keys(s.draft).forEach(function (key) { values[key] = s.draft[key]; });
-
-    return requestJson("POST", "/api/settings/validate", { values: values }).then(function (data) {
-      if (app.settings !== s) return;
-      if (JSON.stringify(s.draft) !== s.validationSnapshot) {
-        s.pendingValidation = true;
-        return;
-      }
-      s.valid = data && data.valid === false ? false : true;
-      s.validationDiagnostic = null;
-      if (s.valid) {
-        s.preview = typeof data.preview === "string" ? data.preview : "";
-        s.warnings = normalizeWarnings(data.warnings);
-        s.fieldErrors = {};
-        settingsFields().forEach(function (field) { field.error = null; });
-        if (Array.isArray(data.fields)) {
-          data.fields.forEach(function (field) {
-            if (field && field.error) {
-              var key = field.section && field.key ? field.section + "." + field.key : (field.key || "");
-              if (key) s.fieldErrors[key] = field.error;
-            }
-          });
-        }
-      } else {
-        s.preview = "";
-      }
-      s.error = null;
-    }).catch(function (err) {
-      if (app.settings !== s) return;
-      if (JSON.stringify(s.draft) !== s.validationSnapshot) {
-        s.pendingValidation = true;
-        return;
-      }
-      if (err instanceof OfflineError) {
-        s.valid = null;
-        s.error = err;
-      } else if (err.fields && err.fields.length) {
-        s.valid = false;
-        settingsFields().forEach(function (field) { field.error = null; });
-        s.validationDiagnostic = { code: err.code, status: err.status, message: err.message, detail: err.detail };
-        s.fieldErrors = fieldErrorMap(err.fields);
-        s.preview = "";
-        s.error = null;
-      } else {
-        s.valid = false;
-        s.preview = "";
-        s.error = err;
-      }
-    }).finally(function () {
-      if (app.settings !== s) return;
-      s.validating = false;
-      updateSettingsMeta();
-      renderSettingsErrors();
-      updateSaveState();
-      if (s.pendingValidation) {
-        s.pendingValidation = false;
-        scheduleValidate(120);
-      }
-    });
-  }
-
-  function updateSettingsMeta() {
-    var s = app.settings;
-    if (!s) return;
-
-    settingsFields().forEach(function (field) {
-      var key = field.section + "." + field.key;
-      var row = $('.field-row[data-field="' + key.replace(/"/g, '\\"') + '"]');
-      if (row) {
-        var sourceEl = $('[data-testid="field-source"]', row);
-        if (sourceEl) {
-          sourceEl.textContent = SOURCE_CN[field.source] || field.source || "默认";
-          sourceEl.dataset.source = field.source || "default";
-        }
-        var fileB = $(".m-file b", row);
-        if (fileB) fileB.textContent = fmtValue(field.file_value);
-        var effB = $(".m-eff b", row);
-        if (effB) {
-          effB.textContent = fmtValue(field.effective_value);
-          effB.classList.toggle("is-empty", field.effective_value === null || field.effective_value === undefined);
-        }
-        row.dataset.shadowed = field.source === "env" ? "true" : "false";
-      }
-
-      var errorEl = $('[data-testid="field-error"][data-field="' + key.replace(/"/g, '\\"') + '"]');
-      var input = $('[data-testid="field-input"][data-field="' + key.replace(/"/g, '\\"') + '"]');
-      var message = s.fieldErrors[key] || field.error || "";
-      if (errorEl) {
-        errorEl.textContent = message;
-        errorEl.hidden = !message;
-      }
-      if (input) {
-        if (message) input.setAttribute("aria-invalid", "true");
-        else input.removeAttribute("aria-invalid");
-      }
-    });
-
-    var summaryHost = $(".summary-panel");
-    if (summaryHost) {
-      var replacement = document.createElement("div");
-      replacement.innerHTML = settingsSummaryHtml();
-      summaryHost.replaceWith(replacement.firstElementChild);
-    }
-
-    var warningsHost = $(".warnings-panel");
-    var warningsHtml = settingsWarningsHtml();
-    if (warningsHost) {
-      if (warningsHtml) {
-        var holder = document.createElement("div");
-        holder.innerHTML = warningsHtml;
-        warningsHost.replaceWith(holder.firstElementChild);
-      } else {
-        warningsHost.remove();
-      }
-    } else if (warningsHtml) {
-      var form = $("#settings-form");
-      if (form) form.insertAdjacentHTML("beforeend", warningsHtml);
-    }
-
-    var preview = $("#settings-preview");
-    if (preview) {
-      if (s.preview) {
-        preview.textContent = s.preview;
-        preview.dataset.state = "ready";
-        preview.classList.remove("is-stale");
-      } else {
-        preview.textContent = s.valid === false
-          ? "存在校验错误，无法生成预览。修正后再保存。"
-          : "校验通过后在这里显示将写入的 TOML（服务端精确输出）。";
-        preview.dataset.state = "empty";
-      }
-    }
-    var previewHint = $("#preview-hint");
-    if (previewHint) {
-      previewHint.textContent = s.preview ? "服务端精确输出" : "校验通过后生成";
-    }
-
-    updateSaveState();
-  }
-
-  function updateSaveState() {
-    var s = app.settings;
-    if (!s) return;
-    var btn = $("#settings-save");
-    var stateEl = $("#save-state");
-    var textEl = $("#save-state-text");
-    var hint = $("#save-hint");
-    var dirtyEl = $("#save-dirty");
-    var baseEl = $("#save-base");
-    var repair = $('[data-testid="repair-action"]');
-    var force = $('[data-act="force"]');
-
-    var dirty = isSettingsDirty();
-    var dirtyCount = dirtyFieldCount();
-    var needsForce = !!(s.error && s.error.code === "cannot_rewrite");
-    var loadError = !!s.loadError;
-
-    if (btn) {
-      btn.hidden = loadError;
-      btn.disabled = s.saving || loadError || s.valid !== true;
-      btn.textContent = s.saving ? "保存中…" : "保存";
-    }
-    if (repair) {
-      repair.hidden = !loadError;
-      repair.disabled = s.saving || s.valid !== true;
-      repair.textContent = s.saving ? "写入中…" : "修复并写入";
-    }
-    if (force) {
-      force.hidden = !needsForce;
-      force.disabled = s.saving || s.valid !== true;
-    }
-
-    var label;
-    var kind;
-    if (s.loadError) {
-      label = "配置文件无法加载 · 使用修复并写入";
-      kind = "false";
-    } else if (s.validating) {
-      label = "校验中…";
-      kind = "pending";
-    } else if (s.valid === true) {
-      label = dirty ? "校验通过 · 有未保存的修改" : "校验通过 · 与文件一致";
-      kind = "true";
-    } else if (s.valid === false) {
-      label = "校验未通过 · 保存已禁用";
-      kind = "false";
-    } else {
-      label = "尚未校验 · 保存已禁用";
-      kind = "pending";
-    }
-    if (s.conflict && !s.loadError && s.valid === true) {
-      label = "文件已被其他进程修改 · 请再次保存";
-      kind = "pending";
-    }
-    if (stateEl) stateEl.dataset.valid = kind;
-    if (textEl) textEl.textContent = label;
-    if (hint) hint.textContent = dirty ? dirtyCount + " 项修改" : "未修改";
-    if (dirtyEl) {
-      dirtyEl.textContent = dirty ? dirtyCount + " 项修改" : "未修改";
-      dirtyEl.className = dirty ? "dirty" : "";
-    }
-    if (baseEl) baseEl.textContent = shortSha(s.baseSha);
-
-    var diag = $("#save-diag");
-    if (diag) {
-      var info = s.validationDiagnostic;
-      diag.hidden = !info;
-      if (info) {
-        var head = [];
-        if (info.code) head.push(info.code + (info.status ? " · HTTP " + info.status : ""));
-        if (info.message) head.push(String(info.message));
-        if (info.detail) head.push(String(info.detail));
-        var pre = $("#save-diag-pre");
-        if (pre) pre.textContent = head.join("\n\n");
-      }
-    }
-  }
-
-  function renderSettingsErrors() {
-    var s = app.settings;
-    var box = $("#settings-error");
-    if (!s || !box) return;
-    var parts = [];
-
-    if (s.loadError) {
-      parts.push('<div class="error-block" role="alert">' +
-        '<div class="error-head"><span class="error-mark" aria-hidden="true">!</span>' +
-        '<span class="error-title">配置文件无法加载</span>' +
-        '<span class="error-code mono">settings_load_error</span></div>' +
-        '<p class="error-hint">subgen.toml 当前无法被加载，普通保存已禁用。先填写 <span class="mono">source_root</span> 与 ' +
-        '<span class="mono">work_root</span>，再在「保存」面板选择「修复并写入」：它会用表单中的值重写整个文件，' +
-        '并先把原文件备份为 <span class="mono">subgen.toml.bak</span>；文件里的注释与顺序可能丢失。</p>' +
-        '<details class="error-diag"><summary>诊断信息（英文原文）</summary><pre>' +
-        esc(typeof s.loadError === "string" ? s.loadError : JSON.stringify(s.loadError, null, 2)) +
-        "</pre></details></div>");
-    }
-
-    if (s.conflict) {
-      parts.push('<div class="notice"><span class="notice-mark" aria-hidden="true">!</span>' +
-        "<div><strong>配置文件已被修改。</strong>保存期间 subgen.toml 被其他进程改动。已重新载入最新文件，" +
-        "表单里的修改仍然保留；确认后请再次保存。</div></div>");
-    }
-
-    if (s.error && !(s.loadError && s.error.code === "settings_load_error")) {
-      parts.push(errorHtml(s.error));
-    }
-
-    box.innerHTML = parts.join("");
-    box.hidden = parts.length === 0;
-    $$(".failure-tail pre", box).forEach(function (pre) {
-      pre.scrollTop = pre.scrollHeight;
-    });
-  }
-
-  function reloadSettingsPreservingDraft() {
-    var previous = app.settings;
-    var draft = previous ? previous.draft : null;
-    return requestJson("GET", "/api/settings").then(function (view) {
-      var next = makeSettingsState(view);
-      if (draft) next.draft = Object.assign({}, next.draft, draft);
-      app.settings = next;
-      renderSettings();
-      return validateSettings();
-    });
-  }
-
-  function loadSettings(options) {
-    var opts = options || {};
-    if (app.settingsLoading) return Promise.resolve();
-    app.settingsLoading = true;
-    if (!opts.background) renderSettingsLoading();
-
-    return requestJson("GET", "/api/settings").then(function (view) {
-      app.settings = makeSettingsState(view);
-      renderSettings();
-      refreshMeta();
-      return validateSettings();
-    }).catch(function (err) {
-      app.settings = null;
-      var body = $("#settings-body");
-      if (body) {
-        body.innerHTML = errorHtml(err) +
-          '<p class="empty-action"><button class="btn" type="button" data-act="reload-settings">重新加载</button></p>';
-      }
-      if (err instanceof OfflineError) setConnection(false, err);
-    }).finally(function () {
-      app.settingsLoading = false;
-    });
-  }
-
-  function saveSettings(force) {
-    var s = app.settings;
-    if (!s || s.saving) return;
-    if (s.valid !== true) {
-      if (force) toast("请先通过校验再强制写入", "error");
+    if (state.online) {
+      element.dataset.state = "online";
+      if (text) text.textContent = "本地服务正常";
+      element.title = state.meta && state.meta.server ? `subgen ${state.meta.server.version}` : "";
       return;
     }
-    if (s.loadError && !force) {
-      toast("配置文件无法加载，请使用「修复并写入」", "error");
-      return;
-    }
-
-    s.saving = true;
-    s.conflict = false;
-    updateSaveState();
-
-    var repairing = !!s.loadError;
-    var payload = {
-      values: s.draft,
-      base_sha256: s.baseSha
-    };
-    if (force) payload.force = true;
-
-    requestJson("PUT", "/api/settings", payload).then(function () {
-      s.saving = false;
-      var message = repairing
-        ? "已修复并写入 subgen.toml（原文件备份为 subgen.toml.bak）"
-        : force
-          ? "已强制写入规范 TOML（原文件备份为 subgen.toml.bak）"
-          : "已保存到 subgen.toml（原文件备份为 subgen.toml.bak）";
-      s.validationDiagnostic = null;
-      toast(message, "success");
-      announce("参数设置已保存");
-      return loadSettings({ background: true });
-    }).catch(function (err) {
-      s.saving = false;
-
-      if (err instanceof OfflineError) {
-        s.error = err;
-        setConnection(false, err);
-        renderSettingsErrors();
-        updateSaveState();
-        return;
-      }
-
-      if (err.code === "settings_changed") {
-        s.conflict = true;
-        toast("配置文件已被修改，已重新载入最新内容", "error", "settings_changed");
-        reloadSettingsPreservingDraft().then(function () {
-          var current = app.settings;
-          if (current) {
-            current.conflict = true;
-            renderSettingsErrors();
-            updateSaveState();
-          }
-        });
-        return;
-      }
-
-      if (err.code === "cannot_rewrite") {
-        s.error = err;
-        renderSettingsErrors();
-        updateSaveState();
-        return;
-      }
-
-      if (err.code === "settings_invalid" && err.fields && err.fields.length) {
-        s.valid = false;
-        s.fieldErrors = fieldErrorMap(err.fields);
-        s.error = new ApiError({
-          status: err.status,
-          code: "draft_invalid",
-          message: err.message,
-          detail: err.detail,
-          fields: err.fields
-        });
-      } else {
-        s.error = err;
-      }
-      renderSettingsErrors();
-      updateSettingsMeta();
-      updateSaveState();
-    });
+    element.dataset.state = "offline";
+    if (text) text.textContent = "无法连接本地服务";
+    element.removeAttribute("title");
   }
 
-
-  function parseRoute() {
-    var hash = location.hash.replace(/^#/, "");
-    if (!hash || hash === "/") return { name: "jobs", id: null };
-    var detailMatch = /^\/jobs\/([^/]+)\/?$/.exec(hash);
-    if (detailMatch) {
-      var id;
-      try { id = decodeURIComponent(detailMatch[1]); } catch (err) { id = detailMatch[1]; }
-      return { name: "detail", id: id };
-    }
-    if (/^\/jobs\/?$/.test(hash)) return { name: "jobs", id: null };
-    if (/^\/settings\/?$/.test(hash)) return { name: "settings", id: null };
-    return null;
+  function renderOffline(error) {
+    const banner = $("#offline-banner");
+    if (!banner) return;
+    const offline = state.online === false;
+    banner.hidden = !offline;
+    banner.title = offline && error ? diagnostic(error) : "";
+    const detail = $("#offline-detail");
+    if (detail) detail.textContent = "";
   }
 
-  function updateNav(name) {
-    $$("[data-nav]").forEach(function (link) {
-      var isCurrent = (name === "settings" ? link.dataset.nav === "settings" : link.dataset.nav === "jobs");
-      if (isCurrent) link.setAttribute("aria-current", "page");
+  function setNav(section) {
+    $$("[data-nav]").forEach((link) => {
+      if (link.dataset.nav === section) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     });
   }
 
-  function handleRoute() {
-    var route = parseRoute();
-    if (!route) {
-      if (location.hash !== "#/jobs") {
-        location.replace("#/jobs");
-        return;
+  function closeMenus(except) {
+    $$(".menu[open]").forEach((menu) => {
+      if (menu !== except) menu.removeAttribute("open");
+    });
+  }
+
+
+  async function refreshMeta() {
+    try {
+      const meta = await api("GET", "/api/meta");
+      const recovered = state.online === false;
+      state.meta = meta;
+      state.metaError = null;
+      state.online = true;
+      renderService();
+      renderOffline(null);
+      if (recovered) {
+        toast("本地服务已恢复");
+        announce("本地服务已恢复");
       }
-      route = { name: "jobs", id: null };
-    }
-
-    var previous = app.route;
-    app.route = route;
-
-    if (previous.name === "detail" && route.name !== "detail") {
-      stopDetailPoll();
-      app.detail = null;
-    }
-
-    $("#jobs-view").hidden = route.name !== "jobs";
-    $("#job-detail").hidden = route.name !== "detail";
-    $("#settings-view").hidden = route.name !== "settings";
-
-    updateNav(route.name === "settings" ? "settings" : "jobs");
-    window.scrollTo(0, 0);
-
-    if (route.name === "jobs") {
-      document.title = "作业 · subgen 控制台";
-      if (!app.jobsLoaded) refreshJobs();
-      else { renderJobList(); syncCreateLock(); }
-    } else if (route.name === "detail") {
-      document.title = "作业 " + route.id + " · subgen 控制台";
-      openDetail(route.id);
-    } else if (route.name === "settings") {
-      document.title = "参数设置 · subgen 控制台";
-      loadSettings();
+      if (state.route.name === "jobs") {
+        renderSetup();
+        renderJobsNotice();
+      }
+      syncPlaces();
+    } catch (error) {
+      state.online = false;
+      state.metaError = error;
+      renderService();
+      renderOffline(error);
+      if (state.route.name === "jobs") renderSetup();
     }
   }
 
-
-  function updateClock() {
-    var el = $("#conn-clock");
-    if (!el) return;
-    el.textContent = fmtClock(Date.now() / 1000);
+  function scheduleMeta() {
+    clearTimeout(state.metaTimer);
+    state.metaTimer = setTimeout(async () => {
+      if (!document.hidden) {
+        await refreshMeta();
+        if (state.route.name === "jobs" && state.online) await refreshJobs(true);
+      }
+      scheduleMeta();
+    }, 5000);
   }
 
-  function onVisibilityChange() {
-    renderPollState();
-    if (document.hidden) {
-      clearTimeout(app.detailTimer);
+  function setupInfo() {
+    return state.meta && state.meta.setup ? state.meta.setup : null;
+  }
+
+  function setupReady(setup) {
+    return Boolean(setup && setup.source_exists && setup.translation_configured);
+  }
+
+  function setupCompleteCount(setup) {
+    if (!setup) return 0;
+    let count = 0;
+    if (setup.source_exists) count += 1;
+    if (setup.translation_configured) count += 1;
+    if (setup.asr_model_exists) count += 1;
+    return count;
+  }
+
+  function setupMissingLabels(setup) {
+    const missing = [];
+    if (!setup.source_exists) missing.push("视频文件夹");
+    if (!setup.translation_configured) missing.push("翻译服务");
+    if (!setup.asr_model_exists) missing.push("模型文件");
+    return missing;
+  }
+
+  function setSetupRow(prefix, stateText, tone, value) {
+    const stateElement = $(`#setup-${prefix}-state`);
+    const valueElement = $(`#setup-${prefix}-note` ) || $(`#setup-${prefix}-path`);
+    if (stateElement) {
+      stateElement.textContent = stateText;
+      stateElement.dataset.tone = tone;
+    }
+    if (valueElement) {
+      valueElement.textContent = value;
+      if (valueElement.classList.contains("mono")) valueElement.title = value;
+    }
+    const item = $(`[data-testid="setup-item"][data-item="${prefix === "source" ? "source" : prefix === "translation" ? "translation" : "models"}"]`);
+    if (item) item.dataset.state = tone;
+  }
+
+  function renderSetup() {
+    const count = $("#setup-count");
+    const setup = setupInfo();
+    const offline = state.online === false;
+
+    if (!setup) {
+      const stateText = offline ? "读取失败" : "正在读取";
+      const tone = offline ? "bad" : "muted";
+      const value = offline ? "本地服务没有响应" : "正在读取设置…";
+      setSetupRow("source", stateText, tone, value);
+      setSetupRow("translation", stateText, tone, value);
+      setSetupRow("models", stateText, tone, value);
+      if (count) {
+        count.textContent = offline ? "等待本地服务" : "正在读取设置…";
+        count.dataset.tone = offline ? "bad" : "";
+      }
       return;
     }
-    refreshMeta();
-    scheduleMeta(META_INTERVAL);
-    if (app.route.name === "jobs" && app.jobsLoaded) refreshJobs({ quiet: true });
-    if (app.route.name === "detail" && app.detail && isActive(app.detail.record)) {
-      scheduleDetail(50);
+
+    if (!setup.source_root) {
+      setSetupRow("source", "还没选择", "warn", "还没有选择文件夹");
+    } else if (!setup.source_exists) {
+      setSetupRow("source", "文件夹不存在", "bad", setup.source_root);
+    } else {
+      setSetupRow("source", "已选择", "ok", setup.source_root);
+    }
+
+    if (!setup.translation_configured) {
+      setSetupRow("translation", "还没填写", "warn", "还没有填写服务地址和模型");
+    } else if (!setup.api_key_configured) {
+      setSetupRow("translation", "已填写，但没有检测到 API key", "warn", "服务地址已经填写，密钥需要单独设置");
+    } else {
+      setSetupRow("translation", "已填写", "ok", "服务地址和模型已填写，API key 已检测到");
+    }
+
+    if (setup.asr_model_exists) {
+      setSetupRow("models", "已找到", "ok", setup.asr_model || setup.model_root || "模型文件已准备好");
+    } else {
+      setSetupRow("models", "没有找到", "warn", "试运行不需要模型文件，真实运行前需要准备");
+    }
+
+    if (count) {
+      const done = setupCompleteCount(setup);
+      count.textContent = `已完成 ${done} / 3`;
+      count.dataset.tone = done === 3 ? "ok" : "warn";
     }
   }
 
-  function bindStaticEvents() {
-    $("#create-form").addEventListener("submit", function (event) {
-      event.preventDefault();
-      submitCreate();
-    });
+  function renderJobsNotice() {
+    const notice = $("#jobs-setup-notice");
+    if (!notice) return;
+    const setup = setupInfo();
+    if (!setup || !state.jobs.length) {
+      notice.hidden = true;
+      return;
+    }
+    const missing = setupMissingLabels(setup);
+    if (!missing.length) {
+      notice.hidden = true;
+      return;
+    }
+    notice.hidden = false;
+    const text = $("#jobs-setup-notice-text");
+    if (text) text.textContent = `还有 ${missing.length} 项没有准备好：${missing.join("、")}。真实运行前先补上，试运行不受影响。`;
+  }
 
-    $("#list-refresh").addEventListener("click", function () {
-      refreshMeta();
+
+  function parseRoute() {
+    const raw = location.hash.replace(/^#/, "").replace(/^\/+/, "");
+    if (!raw || raw === "jobs") return { name: "jobs" };
+    if (raw === "settings" || raw.startsWith("settings")) return { name: "settings" };
+    const match = raw.match(/^jobs\/(.+)$/);
+    if (match) {
+      let id = match[1];
+      try {
+        id = decodeURIComponent(id);
+      } catch (error) {
+        id = match[1];
+      }
+      return { name: "detail", id };
+    }
+    return { name: "jobs" };
+  }
+
+  function handleRoute() {
+    const next = parseRoute();
+    const previous = state.route;
+    const changed = next.name !== previous.name || next.id !== previous.id;
+    state.route = next;
+
+    $("#jobs-view").hidden = next.name !== "jobs";
+    $("#job-detail").hidden = next.name !== "detail";
+    $("#settings-view").hidden = next.name !== "settings";
+
+    if (next.name === "jobs") {
+      setNav("jobs");
+      document.title = "任务 · subgen 字幕工坊";
+      stopDetailPolling();
+      renderJobsView();
       refreshJobs();
+    } else if (next.name === "settings") {
+      setNav("settings");
+      document.title = "设置 · subgen 字幕工坊";
+      stopDetailPolling();
+      showSettingsView();
+      if (!state.settingsLoaded) loadSettings();
+    } else {
+      setNav("jobs");
+      document.title = "任务详情 · subgen 字幕工坊";
+      renderJobsView();
+      showDetailView(next.id);
+    }
+
+    if (changed) {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      closeMenus();
+    }
+  }
+
+
+  function mountCreateButton(mode) {
+    const button = $("#create-open");
+    if (!button) return;
+    if (mode === "hero") {
+      const actions = $("#hero-actions");
+      if (actions && button.parentElement !== actions) actions.prepend(button);
+      button.textContent = "开始生成字幕";
+    } else {
+      const action = $("#list-action");
+      if (action && button.parentElement !== action) action.appendChild(button);
+      button.textContent = "新建任务";
+    }
+  }
+
+  function renderJobsView() {
+    const boot = $("#jobs-boot");
+    const empty = $("#jobs-empty");
+    const live = $("#jobs-live");
+    const errorCard = $("#jobs-error");
+    if (!empty || !live) return;
+
+    const hasJobs = state.jobs.length > 0;
+    const loading = !state.jobsLoaded && !state.jobsError;
+
+    if (boot) boot.hidden = !loading;
+    empty.hidden = loading || hasJobs;
+    live.hidden = loading || !hasJobs;
+
+    if (errorCard) {
+      const showError = Boolean(state.jobsError) && !state.jobsError.offline && state.online !== false;
+      errorCard.hidden = !showError;
+      if (showError) {
+        const copy = $("#jobs-error-copy");
+        if (copy) copy.textContent = friendlyError(state.jobsError);
+        const tech = $("#jobs-error-tech");
+        if (tech) tech.textContent = diagnostic(state.jobsError);
+      }
+    }
+
+    if (!hasJobs) {
+      mountCreateButton("hero");
+      renderSetup();
+      return;
+    }
+
+    mountCreateButton("list");
+    renderJobList();
+    renderJobsNotice();
+  }
+
+  function renderJobList() {
+    const list = $("#job-list");
+    const count = $("#jobs-count");
+    if (!list) return;
+    const jobs = state.jobs;
+    if (count) {
+      const active = jobs.filter((job) => job.state === "running" || job.state === "queued").length;
+      count.textContent = active ? `共 ${jobs.length} 个任务 · ${active} 个进行中` : `共 ${jobs.length} 个任务`;
+    }
+
+    const signature = jobs
+      .map((job) => {
+        const progress = job.progress || {};
+        return [job.job_id, job.state, job.current_stage, progress.done, progress.total, job.updated_at].join(":");
+      })
+      .join("|");
+    if (signature === state.jobsSignature) {
+      renderJobsNotice();
+      return;
+    }
+    state.jobsSignature = signature;
+
+    const freshIds = [];
+    const html = jobs.map((job, index) => {
+      const fresh = !state.knownJobIds.has(job.job_id);
+      if (fresh) freshIds.push(job.job_id);
+      return jobRowHtml(job, index, fresh);
+    });
+    list.innerHTML = html.join("");
+    jobs.forEach((job) => state.knownJobIds.add(job.job_id));
+    if (freshIds.length > 6) state.jobsSignature = signature;
+    renderJobsNotice();
+  }
+
+  function jobRowHtml(job, index, fresh) {
+    const stateInfo = jobStateMeta(job.state);
+    const active = job.state === "running" || job.state === "queued";
+    const progress = job.progress || {};
+    const percent = clampPercent(progress.done, progress.total);
+    const bar =
+      active
+        ? `<div class="job-bar" ${percent == null ? 'data-indeterminate="1"' : ""} role="progressbar" aria-label="任务进度" ${
+            percent == null ? "" : `aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"`
+          }><span style="width:${percent == null ? 34 : percent}%"></span></div>`
+        : "";
+
+    const menuItems = active
+      ? '<button class="menu-item" type="button" data-action="cancel">取消任务</button>'
+      : `<button class="menu-item" type="button" data-action="rerun">重跑</button>
+         <button class="menu-item menu-item--danger" type="button" data-action="delete">删除任务</button>`;
+
+    return `<li class="job-card" data-testid="job-row" data-job-id="${esc(job.job_id)}" data-state="${esc(job.state)}" ${
+      fresh ? `data-fresh="1" style="--i:${Math.min(index, 6)}"` : ""
+    }>
+      <div class="job-card-main">
+        <div class="job-card-top">
+          <h3 class="job-card-title"><a href="#/jobs/${encodeURIComponent(job.job_id)}">${esc(jobTitle(job.created_at))}</a></h3>
+          <span class="pill" data-tone="${esc(stateInfo.tone)}" data-testid="job-row-state">${esc(stateInfo.label)}</span>
+        </div>
+        <p class="job-line">${esc(jobLine(job))}</p>
+        ${bar}
+      </div>
+      <div class="job-card-actions">
+        <a class="btn btn--quiet btn--small" href="#/jobs/${encodeURIComponent(job.job_id)}">查看</a>
+        <details class="menu">
+          <summary>更多</summary>
+          <div class="menu-panel">${menuItems}</div>
+        </details>
+      </div>
+    </li>`;
+  }
+
+  function jobLine(job) {
+    const progress = job.progress || {};
+    if (job.state === "dry_run") return `试运行，已生成 ${STAGES.length} 条命令`;
+    if (job.state === "queued") return "正在准备开始";
+    if (job.state === "running") {
+      const phase = phaseForStage(job.current_stage);
+      const step = phase ? PHASES.indexOf(phase) + 1 : 1;
+      const doing = stagePhrase(job.current_stage) || (phase ? phase.name : "处理中");
+      if (progress.done != null && progress.total) {
+        return `正在进行第 ${step} 步，${doing} · 已处理 ${fmtCount(progress.done)} / ${fmtCount(progress.total)} 个视频`;
+      }
+      return `正在进行第 ${step} 步，${doing}`;
+    }
+    if (job.state === "succeeded") return `已生成 ${fmtCount(progress.done || 0)} 个字幕`;
+    if (job.state === "failed") return "这次没有完成，打开详情可以看原因";
+    if (job.state === "cancelled") return "已取消，已经生成的字幕保留";
+    if (job.state === "interrupted") return "运行被中断，可以重跑";
+    return "—";
+  }
+
+  async function refreshJobs(quiet) {
+    if (state.route.name !== "jobs" || state.jobsBusy) return;
+    state.jobsBusy = true;
+    try {
+      const data = await api("GET", "/api/jobs");
+      if (state.route.name !== "jobs") return;
+      state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
+      state.activeJobId = data.active_job_id || null;
+      state.jobsLoaded = true;
+      state.jobsError = null;
+      renderJobsView();
+    } catch (error) {
+      if (state.route.name !== "jobs") return;
+      if (error.offline) {
+        state.online = false;
+        renderService();
+        renderOffline(error);
+      }
+      state.jobsError = error;
+      if (!state.jobsLoaded) {
+        state.jobsLoaded = true;
+        state.jobs = [];
+      }
+      renderJobsView();
+    } finally {
+      state.jobsBusy = false;
+    }
+  }
+
+  async function refreshJobsNow() {
+    await refreshJobs(false);
+  }
+
+
+  async function rerunJob(jobId) {
+    try {
+      const job = await api("POST", `/api/jobs/${encodeURIComponent(jobId)}/rerun`, {
+        client_token: newToken(),
+      });
+      toast("已经开始重跑");
+      announce("已经开始重跑");
+      await refreshJobsNow();
+      location.hash = `#/jobs/${encodeURIComponent(job.job_id)}`;
+    } catch (error) {
+      if (error.code === "external_activity") {
+        const acknowledged = await askExternal(error.detail);
+        if (acknowledged) {
+          try {
+            const job = await api("POST", `/api/jobs/${encodeURIComponent(jobId)}/rerun`, {
+              client_token: newToken(),
+              acknowledge_external: true,
+            });
+            toast("已经开始重跑");
+            await refreshJobsNow();
+            location.hash = `#/jobs/${encodeURIComponent(job.job_id)}`;
+          } catch (retryError) {
+            toast(friendlyError(retryError), "error");
+          }
+        }
+        return;
+      }
+      toast(friendlyError(error), "error");
+    }
+  }
+
+  async function deleteJob(jobId) {
+    const confirmed = await confirmAction({
+      kicker: "删除任务",
+      title: "删除这个任务？",
+      body: "只会删除任务记录，视频和已经生成的字幕不会被删掉。",
+      confirmLabel: "删除",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await api("DELETE", `/api/jobs/${encodeURIComponent(jobId)}`);
+      toast("任务已删除");
+      announce("任务已删除");
+      if (state.detailJobId === jobId) {
+        state.detailJobId = null;
+        location.hash = "#/jobs";
+      } else {
+        await refreshJobsNow();
+      }
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    }
+  }
+
+  async function cancelJob(jobId) {
+    const confirmed = await confirmAction({
+      kicker: "取消任务",
+      title: "取消这次任务？",
+      body: "已经生成的字幕会保留，任务会停在这里。",
+      confirmLabel: "取消任务",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await api("POST", `/api/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+      toast("任务已取消");
+      announce("任务已取消");
+      await refreshJobsNow();
+      if (state.route.name === "detail" && state.detailJobId === jobId) {
+        await pollDetail();
+      }
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    }
+  }
+
+
+  function showDetailView(jobId) {
+    const view = $("#job-detail");
+    if (!view) return;
+    view.hidden = false;
+    if (state.detailJobId === jobId && detailUI.mounted) {
+      startDetailPolling();
+      return;
+    }
+    stopDetailPolling();
+    detailUI.locked = false;
+    state.detailJobId = jobId;
+    state.detailError = null;
+    resetDetail();
+    openDetail(jobId);
+  }
+
+  function resetDetail() {
+    detailUI.job = null;
+    detailUI.stageSignature = "";
+    detailUI.railSignature = "";
+    detailUI.eventKeys = new Set();
+    detailUI.logText = "";
+    detailUI.latestPath = "";
+    detailUI.progressOffset = 0;
+    detailUI.logOffset = 0;
+    detailUI.logPinned = true;
+    detailUI.mounted = false;
+
+    $("#detail-loading").hidden = false;
+    $("#detail-content").hidden = true;
+    $("#detail-error").hidden = true;
+    const eventTail = $("#event-tail");
+    if (eventTail) eventTail.innerHTML = "";
+    const stageBody = $("#stage-body");
+    if (stageBody) stageBody.innerHTML = "";
+    const phaseRail = $("#phase-rail");
+    if (phaseRail) phaseRail.innerHTML = "";
+    const log = $("#log-panel");
+    if (log) log.textContent = "";
+  }
+
+  async function openDetail(jobId) {
+    const requested = jobId;
+    detailUI.locked = true;
+    try {
+      const data = await api(
+        "GET",
+        `/api/jobs/${encodeURIComponent(jobId)}/progress?since=0&log_since=0`
+      );
+      if (state.detailJobId !== requested) return;
+      state.detailError = null;
+      detailUI.progressOffset = Number(data.next_offset) || 0;
+      detailUI.logOffset = Number(data.next_log_offset) || 0;
+      detailUI.mounted = true;
+      $("#detail-loading").hidden = true;
+      $("#detail-content").hidden = false;
+      $("#detail-error").hidden = true;
+      const seeded = storedEvents(data.job).concat(Array.isArray(data.events) ? data.events : []);
+      ingestEvents(seeded, true, data.job);
+      applyDetail(data.job, true);
+      applyLog(data.log || "", true);
+      startDetailPolling();
+    } catch (error) {
+      if (state.detailJobId !== requested) return;
+      showDetailError(error);
+    } finally {
+      if (state.detailJobId === requested) detailUI.locked = false;
+    }
+  }
+
+  function showDetailError(error) {
+    stopDetailPolling();
+    state.detailError = error;
+    if (error.offline) {
+      state.online = false;
+      renderService();
+      renderOffline(error);
+    }
+    $("#detail-loading").hidden = true;
+    $("#detail-content").hidden = true;
+    const card = $("#detail-error");
+    card.hidden = false;
+    const title = $("#detail-error-title");
+    const copy = $("#detail-error-copy");
+    if (error.code === "job_not_found") {
+      if (title) title.textContent = "这个任务不存在";
+      if (copy) copy.textContent = "它可能已经被删除。回到任务列表看看最新的记录。";
+    } else {
+      if (title) title.textContent = "这个任务没有读出来";
+      if (copy) copy.textContent = friendlyError(error);
+    }
+    const tech = $("#detail-error-tech");
+    if (tech) tech.textContent = diagnostic(error);
+  }
+
+  async function pollDetail() {
+    if (!state.detailJobId || detailUI.locked || state.route.name !== "detail") return;
+    const requested = state.detailJobId;
+    detailUI.locked = true;
+    try {
+      const data = await api(
+        "GET",
+        `/api/jobs/${encodeURIComponent(requested)}/progress?since=${detailUI.progressOffset}&log_since=${detailUI.logOffset}`
+      );
+      if (state.detailJobId !== requested) return;
+      detailUI.progressOffset = Number(data.next_offset) || detailUI.progressOffset;
+      detailUI.logOffset = Number(data.next_log_offset) || detailUI.logOffset;
+      ingestEvents(Array.isArray(data.events) ? data.events : [], false, data.job);
+      applyDetail(data.job, false);
+      applyLog(data.log || "", Boolean(data.log_reset));
+    } catch (error) {
+      if (state.detailJobId !== requested) return;
+      if (error.code === "job_not_found") {
+        showDetailError(error);
+        return;
+      }
+      if (error.offline) {
+        state.online = false;
+        renderService();
+        renderOffline(error);
+      }
+    } finally {
+      detailUI.locked = false;
+    }
+  }
+
+  async function detailTick() {
+    state.detailTimer = null;
+    if (document.hidden || !state.detailJobId || state.route.name !== "detail") return;
+    await pollDetail();
+    if (document.hidden || !state.detailJobId || state.route.name !== "detail") return;
+    state.detailTimer = setTimeout(detailTick, 1000);
+  }
+
+  function startDetailPolling(delay) {
+    stopDetailPolling();
+    if (document.hidden || !state.detailJobId) return;
+    state.detailTimer = setTimeout(detailTick, typeof delay === "number" ? delay : 1000);
+  }
+
+  function stopDetailPolling() {
+    clearTimeout(state.detailTimer);
+    state.detailTimer = null;
+  }
+
+  function progressOf(job) {
+    const summary = state.jobs.find((item) => item.job_id === job.job_id);
+    if (summary && summary.progress && summary.progress.exact) {
+      return { ...summary.progress, exact: true };
+    }
+    const stages = job.stages || [];
+    const current = stages[job.current];
+    if (current && current.counters) {
+      const counters = current.counters;
+      const done = counters.completed != null ? counters.completed : counters.count;
+      const total = counters.selected != null ? counters.selected : counters.count;
+      return { done, total, failed: counters.failed || 0, exact: true };
+    }
+    if (job.state === "running" && current) {
+      const rows = liveRowsFor(job, current.name);
+      const done = rows.filter((row) => isCompletionEvent(row.event)).length;
+      let total = null;
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (row.selected != null) {
+          total = Number(row.selected);
+          break;
+        }
+        if (row.processable != null) {
+          total = Number(row.processable);
+          break;
+        }
+      }
+      return { done, total, failed: rows.filter((row) => isFailureEvent(row.event)).length, exact: false };
+    }
+    return { done: null, total: null, failed: 0, exact: false };
+  }
+
+  function liveRowsFor(job, stageName) {
+    const target = normalizeStage(stageName);
+    const rows = [];
+    for (const stage of job.stages || []) {
+      if (normalizeStage(stage.name) !== target) continue;
+      for (const row of stage.events || []) rows.push(row);
+    }
+    return rows;
+  }
+
+  function isCompletionEvent(name) {
+    return new Set([
+      "completed",
+      "video_completed",
+      "batch_completed",
+      "skipped_existing",
+      "skipped_no_audio",
+      "skipped_verified",
+      "video_existing",
+    ]).has(name);
+  }
+
+  function isFailureEvent(name) {
+    return String(name || "").includes("failed");
+  }
+
+  function applyDetail(job, initial) {
+    if (!job) return;
+    const previousState = detailUI.job ? detailUI.job.state : null;
+    detailUI.job = job;
+    detailUI.latestPath = lastPath(job) || detailUI.latestPath;
+
+    if (initial) {
+      detailUI.mounted = true;
+    }
+
+    const title = $("#detail-title");
+    if (title) title.textContent = jobTitle(job.created_at);
+    document.title = `${jobTitle(job.created_at)} · subgen 字幕工坊`;
+
+    const stateElement = $("#detail-state");
+    const stateInfo = jobStateMeta(job.state);
+    if (stateElement) {
+      stateElement.textContent = stateInfo.label;
+      stateElement.dataset.tone = stateInfo.tone;
+    }
+
+    const idText = $("#detail-id-text");
+    if (idText) idText.textContent = job.job_id;
+    const copyButton = $("#detail-copy");
+    if (copyButton) copyButton.dataset.jobId = job.job_id;
+
+    renderProgress(job);
+    renderRail(job);
+    renderStages(job);
+    renderFailure(job);
+    renderActions(job);
+
+    if (previousState && previousState !== job.state) {
+      announce(`任务${stateInfo.label}`);
+      refreshJobsNow();
+    }
+  }
+
+  function renderProgress(job) {
+    const card = $(".progress-card");
+    if (card) card.dataset.state = job.state;
+    const progress = progressOf(job);
+    const kicker = $("#progress-kicker");
+    const title = $("#progress-title");
+    const sub = $("#progress-sub");
+    const meta = $("#progress-meta");
+    const track = $("#progress-track");
+    const fill = $("#progress-fill");
+    const latest = $("#progress-latest");
+    const cancel = $("#cancel-button");
+
+    const elapsed = Math.max(0, (job.ended_at || Date.now() / 1000) - (job.created_at || Date.now() / 1000));
+    const currentStage = (job.stages || [])[job.current];
+    const phase = currentStage ? phaseForStage(currentStage.name) : null;
+
+    let kickerText = "任务状态";
+    let titleText = "任务";
+    let subText = "";
+    let metaText = "";
+    let showTrack = false;
+    let indeterminate = false;
+    let percent = null;
+
+    if (job.state === "dry_run") {
+      kickerText = "试运行";
+      titleText = "试运行完成";
+      subText = "没有处理任何视频";
+      metaText = "这次只检查了将要执行的命令，视频文件没有被改动。";
+    } else if (job.state === "running" || job.state === "queued") {
+      kickerText = "正在进行";
+      titleText = job.state === "queued" ? "正在准备任务" : STAGE_HEADLINE[normalizeStage(currentStage && currentStage.name)] || "正在处理";
+      if (progress.done != null && progress.total) {
+        subText = `已处理 ${fmtCount(progress.done)} / ${fmtCount(progress.total)} 个视频`;
+      } else if (phase) {
+        subText = `正在进行第 ${PHASES.indexOf(phase) + 1} 步，${phase.name}`;
+      } else {
+        subText = "正在开始";
+      }
+      if (progress.failed) subText += ` · ${fmtCount(progress.failed)} 个失败`;
+      metaText = `已用 ${fmtDuration(elapsed)}`;
+      showTrack = true;
+      percent = clampPercent(progress.done, progress.total);
+      indeterminate = percent == null;
+    } else if (job.state === "succeeded") {
+      kickerText = "已完成";
+      titleText = "字幕已生成";
+      subText = `已生成 ${fmtCount(progress.done != null ? progress.done : 0)} 个字幕`;
+      metaText = `用时 ${fmtDuration(elapsed)} · 字幕就在每个视频旁边，文件名是视频名加 .zh.srt。`;
+      showTrack = true;
+      percent = 100;
+    } else if (job.state === "failed") {
+      kickerText = "任务停止";
+      titleText = "这次没有完成";
+      const failedStage = (job.stages || []).find((stage) => stage.status === "failed") || currentStage;
+      const failedPhase = failedStage ? phaseForStage(failedStage.name) : null;
+      subText = failedStage
+        ? `在第 ${failedPhase ? PHASES.indexOf(failedPhase) + 1 : 1} 步「${failedPhase ? failedPhase.name : "处理"}」时失败了。`
+        : "任务停在了中间。";
+      metaText = `用时 ${fmtDuration(elapsed)}`;
+      percent = clampPercent(progress.done, progress.total);
+      showTrack = Boolean(progress.total) && (percent == null || percent > 0);
+    } else if (job.state === "cancelled") {
+      kickerText = "已取消";
+      titleText = "任务已取消";
+      subText = "已经停下，已经生成的字幕保留。";
+      metaText = `已用 ${fmtDuration(elapsed)}`;
+      showTrack = Boolean(progress.total);
+      percent = clampPercent(progress.done, progress.total);
+    } else if (job.state === "interrupted") {
+      kickerText = "已中断";
+      titleText = "任务已中断";
+      subText = "运行没有正常结束，可以重跑一次。";
+      metaText = `已用 ${fmtDuration(elapsed)}`;
+    }
+
+    if (kicker) kicker.textContent = kickerText;
+    if (title) title.textContent = titleText;
+    if (sub) sub.textContent = subText;
+    if (meta) meta.textContent = metaText;
+
+    if (track && fill) {
+      track.hidden = !showTrack;
+      track.dataset.indeterminate = indeterminate ? "1" : "0";
+      fill.style.width = indeterminate ? "34%" : `${percent == null ? 0 : percent}%`;
+    }
+
+    if (latest) {
+      const latestPath = detailUI.latestPath;
+      const showLatest = (job.state === "running" || job.state === "queued") && latestPath;
+      latest.hidden = !showLatest;
+      if (showLatest) latest.textContent = `正在处理 ${basename(latestPath)}`;
+    }
+
+    if (cancel) cancel.hidden = !(job.state === "running" || job.state === "queued");
+  }
+
+  function renderRail(job) {
+    const rail = $("#phase-rail");
+    if (!rail) return;
+    const cells = PHASES.map((phase, index) => {
+      const status = phaseStatus(job, phase);
+      return { phase, index, status, text: phaseStateText(job, status) };
+    });
+    const signature = cells.map((cell) => `${cell.phase.id}:${cell.status}`).join("|");
+    if (signature === detailUI.railSignature && rail.children.length) return;
+    detailUI.railSignature = signature;
+    rail.innerHTML = cells
+      .map(
+        (cell) => `<li class="phase-cell" data-testid="phase-cell" data-phase="${esc(cell.phase.id)}" data-status="${esc(cell.status)}">
+          <span class="phase-mark" aria-hidden="true">${markSvg(cell.status)}</span>
+          <p class="phase-kicker">第 ${cell.index + 1} 步</p>
+          <h3 class="phase-name">${esc(cell.phase.name)}</h3>
+          <p class="phase-detail">${esc(cell.phase.detail)}</p>
+          <p class="phase-state">${esc(cell.text)}</p>
+        </li>`
+      )
+      .join("");
+  }
+
+  function renderStages(job) {
+    const body = $("#stage-body");
+    if (!body) return;
+    const stages = job.stages || [];
+    const signature = stages
+      .map((stage) => `${stage.name}:${stage.status}:${stage.exit_code}:${JSON.stringify(stage.counters)}`)
+      .join("|");
+    if (signature === detailUI.stageSignature && body.children.length) return;
+    detailUI.stageSignature = signature;
+    body.innerHTML = stages
+      .map((stage) => {
+        const argv = (stage.argv || []).join(" ");
+        return `<tr data-testid="stage-cell" data-stage="${esc(stage.name)}" data-status="${esc(stage.status)}">
+          <td><span class="stage-name">${esc(stageLabel(stage.name))}</span><span class="stage-tech">${esc(stage.name)}</span></td>
+          <td><span class="stage-state" data-status="${esc(stage.status)}">${esc(STAGE_STATUS_LABEL[stage.status] || stage.status)}</span></td>
+          <td><span class="stage-exit">${stage.exit_code == null ? "—" : esc(stage.exit_code)}</span></td>
+          <td><span class="stage-count">${esc(counterText(stage.counters))}</span></td>
+          <td><div class="stage-argv" title="${esc(argv)}">${esc(argv || "—")}</div></td>
+        </tr>`;
+      })
+      .join("");
+  }
+
+  function counterText(counters) {
+    if (!counters) return "—";
+    const parts = [];
+    const done = counters.completed != null ? counters.completed : counters.count;
+    const total = counters.selected != null ? counters.selected : counters.count;
+    if (done != null && total != null) parts.push(`完成 ${fmtCount(done)} / ${fmtCount(total)}`);
+    else if (done != null) parts.push(`完成 ${fmtCount(done)}`);
+    if (counters.failed) parts.push(`失败 ${fmtCount(counters.failed)}`);
+    return parts.length ? parts.join(" · ") : "—";
+  }
+
+  function renderFailure(job) {
+    const card = $("#job-failure");
+    if (!card) return;
+    if (job.state !== "failed") {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const failedStage = (job.stages || []).find((stage) => stage.status === "failed") || (job.stages || [])[job.current];
+    const cause = failureCause(job, failedStage);
+    const title = $("#failure-title");
+    if (title) title.textContent = cause.title;
+    const hint = $("#job-error-hint");
+    if (hint) hint.innerHTML = cause.hintHtml;
+    const line = $("#job-failure-line");
+    if (line) line.textContent = "修好以后可以重跑，已经生成的字幕会保留。";
+    updateFailureLog(job, failedStage);
+  }
+
+  function failureCause(job, failedStage) {
+    const parts = [
+      job.error || "",
+      failedStage && failedStage.error ? failedStage.error : "",
+      failedStage && failedStage.events
+        ? failedStage.events.map((event) => event.reason || "").join(" ")
+        : "",
+    ];
+    const text = (parts.join(" ") + " " + lastLines(detailUI.logText || "", 80)).toLowerCase();
+    if (/model|checkpoint|weights/.test(text) && /not a directory|not found|missing|unavailable|no such/.test(text)) {
+      return {
+        title: "没有找到语音模型",
+        hintHtml:
+          '在 <a href="#/settings" data-settings-focus="models">设置 → 模型与运行</a> 里放好模型文件，或者先试运行确认命令。',
+      };
+    }
+    if (/source root|source_root|folder/.test(text) && /does not exist|not found|no such|missing/.test(text)) {
+      return {
+        title: "视频文件夹不见了",
+        hintHtml:
+          '它可能被移动或删除了。在 <a href="#/settings" data-settings-focus="source">设置 → 视频文件夹</a> 里重新选一个存在的文件夹。',
+      };
+    }
+    if (/endpoint|translation|api key|unauthorized|connection refused|connecterror|timeout|11434|11436/.test(text)) {
+      return {
+        title: "翻译服务没有响应",
+        hintHtml:
+          '确认服务已经启动，并检查 <a href="#/settings" data-settings-focus="translation">设置 → 翻译服务</a> 里的地址和 API key 环境变量。',
+      };
+    }
+    if (/ffmpeg|audio extraction|extract failed|failed to extract|extraction failed/.test(text)) {
+      return {
+        title: "音频提取失败",
+        hintHtml: "确认这台机器上装了 ffmpeg，并且它能读取这个视频文件。",
+      };
+    }
+    return {
+      title: "这次没有完成",
+      hintHtml: "可以打开「处理细节」查看技术原因，或者修好设置后重跑一次。",
+    };
+  }
+
+  function updateFailureLog(job, failedStage) {
+    const panel = $("#failure-log");
+    if (!panel) return;
+    const lines = detailUI.logText ? lastLines(detailUI.logText, 80) : "";
+    const raw = [job.error || "", failedStage && failedStage.error ? failedStage.error : ""]
+      .filter(Boolean)
+      .join("\n");
+    panel.textContent = lines || raw || "这次没有留下日志。";
+  }
+
+  function lastLines(text, count) {
+    const lines = String(text).replace(/\s+$/, "").split("\n");
+    return lines.slice(Math.max(0, lines.length - count)).join("\n");
+  }
+
+  function renderActions(job) {
+    const rerun = $("#rerun-button");
+    const remove = $("#delete-button");
+    const actions = $("#detail-actions");
+    const failure = $("#job-failure");
+    const rail = $(".rail-card");
+    const terminal = ["succeeded", "failed", "cancelled", "interrupted", "dry_run"].includes(job.state);
+    if (rerun) rerun.hidden = !terminal;
+    if (remove) remove.hidden = !terminal;
+    if (!actions) return;
+    actions.hidden = !terminal;
+    if (job.state === "failed" && failure) {
+      const logBlock = $("details.tech", failure);
+      if (actions.parentElement !== failure) failure.insertBefore(actions, logBlock);
+    } else if (rail && actions.previousElementSibling !== rail) {
+      rail.after(actions);
+    }
+  }
+
+  function lastPath(job) {
+    const rows = storedEvents(job);
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      if (rows[index].path) return rows[index].path;
+    }
+    return "";
+  }
+
+  function storedEvents(job) {
+    const rows = [];
+    for (const stage of job.stages || []) {
+      for (const event of stage.events || []) {
+        rows.push({ ...event, stage: event.stage || stage.name });
+      }
+    }
+    return rows;
+  }
+
+  function eventKey(row) {
+    return [row.timestamp, row.stage, row.event, row.path, row.video_id, row.reason].join("|");
+  }
+
+  function eventText(row) {
+    const label = EVENT_LABEL[row.event] || row.event || "";
+    const bits = [label];
+    const file = row.path ? basename(row.path) : "";
+    if (file) bits.push(file);
+    else if (row.count != null) bits.push(`${fmtCount(row.count)} 个视频`);
+    else if (row.selected != null) bits.push(`${fmtCount(row.selected)} 个视频`);
+    if (row.reason) bits.push(String(row.reason).slice(0, 72));
+    return bits.join(" · ");
+  }
+
+  function ingestEvents(rows, initial, job) {
+    const tail = $("#event-tail");
+    if (!tail) return;
+    if (job) detailUI.job = job;
+    if (initial) {
+      detailUI.eventKeys = new Set();
+      tail.innerHTML = "";
+    }
+    const sorted = initial
+      ? rows.slice().sort((left, right) => (toEpoch(left.timestamp) || 0) - (toEpoch(right.timestamp) || 0))
+      : rows;
+
+    const nearBottom = tail.scrollHeight - tail.scrollTop - tail.clientHeight < 40;
+    let added = 0;
+    const fragment = document.createDocumentFragment();
+    for (const row of sorted) {
+      const key = eventKey(row);
+      if (detailUI.eventKeys.has(key)) continue;
+      detailUI.eventKeys.add(key);
+      added += 1;
+      if (row.path) detailUI.latestPath = row.path;
+      const item = document.createElement("li");
+      item.className = "event-row";
+      item.innerHTML = `<span class="event-time">${esc(fmtClock(toEpoch(row.timestamp)))}</span>
+        <span class="event-stage">${esc(stageLabel(row.stage))}</span>
+        <span class="event-text" title="${esc(eventText(row))}">${esc(eventText(row))}</span>`;
+      fragment.appendChild(item);
+    }
+    if (!added) return;
+    tail.appendChild(fragment);
+    while (tail.children.length > 240) tail.removeChild(tail.firstElementChild);
+    const empty = $("#event-empty");
+    if (empty) empty.hidden = tail.children.length > 0;
+    if (initial || nearBottom) tail.scrollTop = tail.scrollHeight;
+    if (detailUI.job) renderProgress(detailUI.job);
+  }
+
+  function applyLog(chunk, reset) {
+    const panel = $("#log-panel");
+    if (!panel) return;
+    if (reset) detailUI.logText = "";
+    if (chunk) detailUI.logText += chunk;
+    if (detailUI.logText.length > 700000) {
+      detailUI.logText = detailUI.logText.slice(-500000);
+    }
+    const empty = $("#log-empty");
+    if (empty) empty.hidden = Boolean(detailUI.logText.trim());
+    if (!detailUI.logText) {
+      panel.textContent = "";
+      return;
+    }
+    const text = lastLines(detailUI.logText, 400);
+    if (panel.textContent === text) return;
+    panel.textContent = text;
+    if (detailUI.logPinned) panel.scrollTop = panel.scrollHeight;
+    const job = detailUI.job;
+    if (job && job.state === "failed") {
+      renderFailure(job);
+    }
+  }
+
+
+  function openCreate() {
+    const setup = setupInfo();
+    if (!state.meta) {
+      toast(state.online === false ? "连不上本地服务，先确认服务还在运行" : "正在读取设置，请稍等");
+      return;
+    }
+    if (!setupReady(setup)) {
+      const missingSource = !setup || !setup.source_exists;
+      toast("先把视频文件夹和翻译服务准备好", "warn");
+      goToSettings(
+        missingSource ? "source" : "translation",
+        missingSource
+          ? "先选好视频文件夹，再填写翻译服务，就可以开始生成字幕了。"
+          : "先填写翻译服务，就可以开始生成字幕了。"
+      );
+      return;
+    }
+
+    resetCreateForm();
+    renderCreateNotices();
+
+    const modal = $("#create-modal");
+    if (!modal) return;
+    if (typeof modal.showModal === "function") modal.showModal();
+    else modal.setAttribute("open", "");
+    state.createOpen = true;
+    const checked = $('input[name="scope"]:checked');
+    if (checked) checked.focus();
+  }
+
+  function resetCreateForm() {
+    const all = $("#create-scope-all");
+    if (all) all.checked = true;
+    const limit = $("#create-limit");
+    if (limit) limit.value = "5";
+    $("#create-dry-run").checked = false;
+    $("#create-skip-inventory").checked = false;
+    $("#create-skip-extract").checked = false;
+    $("#create-asr-batch").value = "32";
+    $("#create-align-batch").value = "16";
+    $("#create-video-ids").value = "";
+    const advanced = $("#create-advanced");
+    if (advanced) advanced.open = false;
+    hideCreateError();
+    setCreateBusy(false);
+    syncCreateChoice();
+  }
+
+  function syncCreateChoice() {
+    $$("[data-choice]").forEach((choice) => {
+      const input = $('input[name="scope"]', choice);
+      choice.dataset.checked = input && input.checked ? "true" : "false";
+    });
+  }
+
+  function renderCreateNotices() {
+    const setup = setupInfo();
+    const notice = $("#create-notice");
+    const text = $("#create-notice-text");
+    const notes = [];
+    if (setup) {
+      if (!setup.asr_model_exists) {
+        notes.push("还没有找到模型文件。可以先试运行，真实运行前准备好模型。");
+      }
+      if (!setup.api_key_configured) {
+        notes.push("没有检测到 API key。服务需要密钥的话，先在环境变量里设置。");
+      }
+      if (!setup.source_exists) notes.push("视频文件夹不可用，先去设置里重新选择。");
+    } else {
+      notes.push("设置没有读出来，创建任务可能会失败。");
+    }
+    if (notice && text) {
+      notice.hidden = notes.length === 0;
+      text.innerHTML = notes.map((note) => `<p>${esc(note)}</p>`).join("");
+    }
+
+    const active = (state.meta && state.meta.active_job_id) || state.activeJobId;
+    const busy = $("#create-busy-notice");
+    if (busy) busy.hidden = !active;
+    const submit = $("#create-submit");
+    if (submit) submit.disabled = Boolean(active) || state.createBusy;
+    if (active) {
+      const link = $("#create-busy-link");
+      if (link) link.dataset.jobId = active;
+    }
+  }
+
+  function closeCreate() {
+    const modal = $("#create-modal");
+    if (!modal) return;
+    if (modal.open) modal.close();
+    else modal.removeAttribute("open");
+    state.createOpen = false;
+  }
+
+  function setCreateBusy(busy) {
+    state.createBusy = busy;
+    const submit = $("#create-submit");
+    if (!submit) return;
+    submit.disabled = busy || Boolean((state.meta && state.meta.active_job_id) || state.activeJobId);
+    submit.textContent = busy ? "正在开始…" : "开始";
+  }
+
+  function showCreateError(text, error) {
+    const box = $("#create-error");
+    if (!box) return;
+    const detail = error ? `<details class="tech"><summary>技术细节</summary><pre class="tech-pre">${esc(diagnostic(error))}</pre></details>` : "";
+    box.innerHTML = `<p>${esc(text)}</p>${detail}`;
+    box.hidden = false;
+  }
+
+  function hideCreateError() {
+    const box = $("#create-error");
+    if (!box) return;
+    box.hidden = true;
+    box.innerHTML = "";
+  }
+
+  function createErrorCopy(error) {
+    const base = friendlyError(error);
+    const fieldKeys = Object.keys(error.fields || {});
+    if (fieldKeys.length && error.code === "invalid_params") {
+      const labels = { limit: "处理数量", video_ids: "指定视频", asr_batch_size: "识别批量", alignment_batch_size: "对齐批量" };
+      return `${base} 需要修改：${fieldKeys.map((key) => labels[key] || key).join("、")}。`;
+    }
+    return base;
+  }
+
+  async function submitCreate(acknowledge) {
+    if (state.createBusy) return;
+    hideCreateError();
+    const scope = $('input[name="scope"]:checked');
+    const scopeValue = scope ? scope.value : "all";
+    let limit = null;
+    if (scopeValue === "limit") {
+      const value = Number.parseInt($("#create-limit").value, 10);
+      if (!Number.isFinite(value) || value < 1) {
+        showCreateError("先填写要处理的视频数量，至少 1 个。");
+        $("#create-limit").focus();
+        return;
+      }
+      limit = value;
+    }
+    const rawIds = $("#create-video-ids").value
+      .split(/[\s,，]+/)
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    const badId = rawIds.find((item) => !/^[0-9a-f]{64}$/.test(item));
+    if (badId) {
+      showCreateError("视频编号需要是 64 位十六进制字符，请检查后再试。");
+      $("#create-video-ids").focus();
+      return;
+    }
+    const params = {
+      limit,
+      video_ids: rawIds,
+      skip_inventory: $("#create-skip-inventory").checked,
+      skip_extract: $("#create-skip-extract").checked,
+      asr_batch_size: positiveInt($("#create-asr-batch").value, 32),
+      alignment_batch_size: positiveInt($("#create-align-batch").value, 16),
+      dry_run: $("#create-dry-run").checked,
+    };
+
+    setCreateBusy(true);
+    try {
+      const job = await api("POST", "/api/jobs", {
+        params,
+        client_token: newToken(),
+        acknowledge_external: Boolean(acknowledge),
+      });
+      setCreateBusy(false);
+      closeCreate();
+      toast(params.dry_run ? "试运行已开始" : "任务已开始");
+      announce(params.dry_run ? "试运行已开始" : "任务已开始");
+      await refreshJobsNow();
+      location.hash = `#/jobs/${encodeURIComponent(job.job_id)}`;
+    } catch (error) {
+      if (error.code === "external_activity" && !acknowledge) {
+        setCreateBusy(false);
+        const acknowledged = await askExternal(error.detail);
+        if (acknowledged) await submitCreate(true);
+        return;
+      }
+      setCreateBusy(false);
+      showCreateError(createErrorCopy(error), error);
+      renderCreateNotices();
+    }
+  }
+
+  function positiveInt(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+
+  const FIELD_SPECS = {
+    "paths.source_root": {
+      label: "文件夹路径",
+      kind: "path",
+      placeholder: "例如 /Users/你的用户名/Movies",
+      help: "subgen 会在这个文件夹及其子文件夹里寻找视频。字幕会写在同一位置，文件名是视频名加 .zh.srt。",
+    },
+    "paths.work_root": {
+      label: "工作目录",
+      kind: "path",
+      help: "清单、音频和日志存放的位置。不确定就保持默认。",
+    },
+    "paths.model_root": {
+      label: "模型文件夹",
+      kind: "path",
+      help: "模型文件所在的文件夹。只在真实运行时读取。",
+    },
+    "paths.asr_model": {
+      label: "语音模型文件夹",
+      kind: "path",
+      help: "语音识别模型的具体文件夹。真实运行前准备好即可。",
+    },
+    "runtime.device": { label: "运行设备", kind: "enum" },
+    "runtime.asr_engine": { label: "语音识别引擎", kind: "enum" },
+    "translation.endpoint": {
+      label: "服务地址",
+      kind: "path",
+      placeholder: "http://127.0.0.1:11434/v1",
+      help: "兼容 OpenAI 接口的服务地址，结尾通常带 /v1。",
+    },
+    "translation.model": { label: "模型名", kind: "text", placeholder: "qwen2.5-32b-instruct" },
+    "translation.revision": { label: "版本", kind: "text", placeholder: "2026-09" },
+    "translation.api_key_env": {
+      label: "API key 环境变量",
+      kind: "text",
+      placeholder: "OPENAI_API_KEY",
+      help: "这里写环境变量的名字，不是密钥本身。",
+    },
+    "translation.review_model": { label: "校对模型", kind: "text", placeholder: "留空就沿用翻译阶段的模型" },
+    "translation.review_revision": { label: "校对版本", kind: "text", placeholder: "留空就沿用翻译阶段的版本" },
+  };
+
+  const ENUM_LABELS = {
+    auto: "自动选择",
+    cpu: "CPU",
+    cuda: "NVIDIA 显卡（CUDA）",
+    mps: "Apple 芯片（MPS）",
+    vllm: "vLLM",
+    funasr: "FunASR",
+  };
+
+  const PLACE_LABELS = {
+    home: "个人文件夹",
+    movies: "影片",
+    downloads: "下载",
+    desktop: "桌面",
+    documents: "文稿",
+  };
+
+  function showSettingsView() {
+    const loading = $("#settings-loading");
+    const form = $("#settings-form");
+    const savebar = $("#savebar");
+    const errorCard = $("#settings-error");
+    if (state.settingsLoaded) {
+      if (loading) loading.hidden = true;
+      if (form) form.hidden = false;
+      if (savebar) savebar.hidden = false;
+      if (errorCard) errorCard.hidden = true;
+    } else if (state.settingsError) {
+      if (loading) loading.hidden = true;
+      if (form) form.hidden = true;
+      if (savebar) savebar.hidden = true;
+      if (errorCard) errorCard.hidden = false;
+    } else {
+      if (loading) loading.hidden = false;
+      if (form) form.hidden = true;
+      if (savebar) savebar.hidden = true;
+      if (errorCard) errorCard.hidden = true;
+    }
+  }
+
+  async function loadSettings() {
+    state.settingsError = null;
+    state.settingsLoaded = false;
+    showSettingsView();
+    try {
+      const data = await api("GET", "/api/settings");
+      state.settings = data;
+      state.settingsDraft = draftFromSettings(data);
+      state.settingsBaseSha = data.base_sha256 || "";
+      state.settingsLoaded = true;
+      state.settingsDirty = false;
+      state.settingsSavedAt = null;
+      renderSettings();
+      showSettingsView();
+    } catch (error) {
+      state.settingsError = error;
+      state.settingsLoaded = false;
+      showSettingsView();
+      const copy = $("#settings-error-copy");
+      if (copy) copy.textContent = friendlyError(error);
+      const tech = $("#settings-error-tech");
+      if (tech) tech.textContent = diagnostic(error);
+      if (error.offline) {
+        state.online = false;
+        renderService();
+        renderOffline(error);
+      }
+    }
+  }
+
+  function draftFromSettings(data) {
+    const draft = {};
+    for (const field of data.fields || []) {
+      const key = `${field.section}.${field.key}`;
+      draft[key] = typeof field.file_value === "string" ? field.file_value : "";
+    }
+    return draft;
+  }
+
+  function fieldRow(key) {
+    if (!state.settings) return null;
+    return (state.settings.fields || []).find((field) => `${field.section}.${field.key}` === key) || null;
+  }
+
+  function fieldValue(key) {
+    return state.settingsDraft[key] != null ? state.settingsDraft[key] : "";
+  }
+
+  function fieldInputHtml(key) {
+    const spec = FIELD_SPECS[key] || { label: key, kind: "text" };
+    const row = fieldRow(key);
+    const id = `field-${key.replace(/\./g, "-")}`;
+    const value = fieldValue(key);
+    let control = "";
+    if (row && row.kind === "enum" && (row.choices || []).length) {
+      const choices = row.choices
+        .map((choice) => `<option value="${esc(choice)}" ${choice === value ? "selected" : ""}>${esc(ENUM_LABELS[choice] || choice)}</option>`)
+        .join("");
+      control = `<select class="input field-input" id="${id}" data-testid="field-input" data-field="${esc(key)}">
+        <option value="" ${value === "" ? "selected" : ""}>未设置</option>${choices}</select>`;
+    } else {
+      const placeholder = state.settingsDraft[key] === "" && row && row.source === "env" ? "由环境变量控制" : spec.placeholder || "";
+      const mono = spec.kind === "path" ? " mono" : "";
+      control = `<input class="input field-input${mono}" id="${id}" data-testid="field-input" data-field="${esc(key)}" type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off">`;
+    }
+    const browse =
+      key === "paths.source_root"
+        ? '<button class="btn btn--quiet" type="button" id="browse-open" data-testid="browse-open">浏览…</button>'
+        : "";
+    const help = spec.help ? `<p class="field-help" id="${id}-help">${esc(spec.help)}</p>` : "";
+    const shadowed = row && row.source === "env";
+    const shadow = `<p class="field-shadow" id="${id}-shadow" ${shadowed ? "" : "hidden"}>当前由环境变量 ${esc(row ? row.env : "")} 控制，这里保存的是文件中的值。</p>`;
+    const describedBy = [spec.help ? `${id}-help` : "", `${id}-error`, shadowed ? `${id}-shadow` : ""]
+      .filter(Boolean)
+      .join(" ");
+    const errorText = row && row.error ? fieldErrorCopy(row.error, key) : "";
+    const described = `aria-describedby="${describedBy}"`;
+    control = control.replace(/^<(input|select)/, `<$1 ${described}`);
+    return `<div class="field" data-field="${esc(key)}">
+      <label class="field-label" for="${id}">${esc(spec.label)}</label>
+      <div class="field-input-row">${control}${browse}</div>
+      ${help}
+      ${shadow}
+      <p class="field-error" id="${id}-error" data-testid="field-error" data-field="${esc(key)}" ${errorText ? "" : "hidden"} ${errorText ? `title="${esc(row.error)}"` : ""}>${esc(errorText)}</p>
+    </div>`;
+  }
+
+  function placeChipsHtml() {
+    const places = state.meta && Array.isArray(state.meta.places) ? state.meta.places : [];
+    if (!places.length) return "";
+    return places
+      .map(
+        (place) =>
+          `<button class="place" type="button" data-place="${esc(place.path)}">${esc(PLACE_LABELS[place.key] || place.name || basename(place.path))}</button>`
+      )
+      .join("");
+  }
+
+  function placesHtml() {
+    const chips = placeChipsHtml();
+    return `<div class="places" id="places" role="group" aria-label="快速选择文件夹" ${chips ? "" : "hidden"}>${chips}</div>`;
+  }
+
+  function renderSettings() {
+    const data = state.settings;
+    if (!data) return;
+    const sections = $("#settings-sections");
+    if (!sections) return;
+
+    const cardSource = `<section class="card" id="card-source">
+      <header class="card-head">
+        <p class="card-kicker">第一步</p>
+        <h2 class="card-title">视频文件夹</h2>
+        <p class="card-lede">先选一个存有日语视频的文件夹。</p>
+      </header>
+      ${fieldInputHtml("paths.source_root")}
+      ${placesHtml()}
+      <div class="field-check-row">
+        <button class="btn btn--quiet btn--small" type="button" id="check-source">检查文件夹</button>
+        <span class="check-result" id="check-result" role="status"></span>
+      </div>
+    </section>`;
+
+    const keyHint = data.api_key_configured
+      ? '<p class="key-hint" data-tone="ok">已检测到 API key</p>'
+      : '<p class="key-hint" data-tone="warn">没有检测到 API key</p>';
+
+    const cardTranslation = `<section class="card" id="card-translation">
+      <header class="card-head">
+        <p class="card-kicker">第二步</p>
+        <h2 class="card-title">翻译服务</h2>
+        <p class="card-lede">任何兼容 OpenAI 接口的服务都可以。运行 <code class="mono">subgen serve</code> 也可以启动本地服务。</p>
+      </header>
+      ${fieldInputHtml("translation.endpoint")}
+      <div class="field-row">
+        ${fieldInputHtml("translation.model")}
+        ${fieldInputHtml("translation.revision")}
+      </div>
+      ${fieldInputHtml("translation.api_key_env")}
+      ${keyHint}
+      <details class="fold-sub">
+        <summary>校对小模型（可选）</summary>
+        <div class="field-row">
+          ${fieldInputHtml("translation.review_model")}
+          ${fieldInputHtml("translation.review_revision")}
+        </div>
+      </details>
+    </section>`;
+
+    const cardRuntime = `<details class="card card--fold" id="card-runtime">
+      <summary>
+        <span class="fold-summary-copy">
+          <span class="fold-summary-title">模型与运行</span>
+          <span class="fold-summary-note">真实运行才需要，试运行可以留空</span>
+        </span>
+        <span class="fold-mark" aria-hidden="true"></span>
+      </summary>
+      <div class="card-body">
+        <p class="card-lede">模型文件只在真实运行时读取。第一次可以先试运行，确认命令没问题。</p>
+        ${fieldInputHtml("paths.model_root")}
+        ${fieldInputHtml("paths.asr_model")}
+        <div class="field-row">
+          ${fieldInputHtml("runtime.device")}
+          ${fieldInputHtml("runtime.asr_engine")}
+        </div>
+        ${fieldInputHtml("paths.work_root")}
+      </div>
+    </details>`;
+
+    sections.innerHTML = cardSource + cardTranslation + cardRuntime;
+
+    const repair = $("#settings-repair");
+    if (repair) {
+      const needsRepair = data.settings_ok === false;
+      repair.hidden = !needsRepair;
+      if (needsRepair) {
+        const error = $("#repair-error");
+        if (error) error.textContent = data.load_error || "";
+        const repairPath = $("#repair-path");
+        if (repairPath) repairPath.textContent = basename(data.config_path) || "subgen.toml";
+      }
+    }
+
+    const notesElement = $("#settings-warning");
+    if (notesElement) {
+      const notes = Array.from(new Set((data.warnings || []).map((warning) => warningNote(warning))));
+      notesElement.hidden = notes.length === 0;
+      notesElement.innerHTML = notes.map((note) => `<p class="note">${esc(note)}</p>`).join("");
+    }
+
+    const configPath = $("#settings-config-path");
+    if (configPath) configPath.textContent = data.config_path || "—";
+    const sha = $("#settings-base-sha");
+    if (sha) sha.textContent = data.base_sha256 ? data.base_sha256.slice(0, 12) : "—";
+    const rawWarnings = $("#settings-raw-warnings");
+    if (rawWarnings) {
+      rawWarnings.innerHTML = (data.warnings || []).length
+        ? `<pre class="tech-pre">${esc((data.warnings || []).join("\n"))}</pre>`
+        : "";
+    }
+
+    setSettingsStatus(statusText(), statusTone());
+    bindSettingsForm();
+    setCheckResult("还没有检查", "muted");
+    closePreview();
+
+    if (state.settingsReason) {
+      showSettingsNotice(state.settingsReason);
+      state.settingsReason = "";
+    }
+
+    const pendingFocus = sessionStorage.getItem("subgen.settings.focus");
+    if (pendingFocus) {
+      sessionStorage.removeItem("subgen.settings.focus");
+      setTimeout(() => focusSettingsTarget(pendingFocus), 0);
+    }
+  }
+
+  function statusText() {
+    if (state.settingsDirty) return "有未保存的修改";
+    if (state.settings && state.settings.settings_ok === false) return "配置文件需要修复";
+    if (state.settingsSavedAt) return `上次保存 ${fmtClock(state.settingsSavedAt)}`;
+    return "设置已读取";
+  }
+
+  function statusTone() {
+    if (state.settingsDirty) return "warn";
+    if (state.settings && state.settings.settings_ok === false) return "warn";
+    if (state.settingsSavedAt) return "ok";
+    return "";
+  }
+
+  function setSettingsStatus(text, tone) {
+    const element = $("#settings-status");
+    if (!element) return;
+    element.textContent = text;
+    if (tone) element.dataset.tone = tone;
+    else delete element.dataset.tone;
+  }
+
+  function bindSettingsForm() {
+    const form = $("#settings-form");
+    if (!form || form.dataset.bound === "1") return;
+    form.dataset.bound = "1";
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveSettings(false);
+    });
+    form.addEventListener("input", onSettingsInput);
+    form.addEventListener("change", onSettingsInput);
+    form.addEventListener("click", (event) => {
+      const check = event.target.closest("#check-source");
+      if (check) {
+        checkFolder();
+        return;
+      }
+      const place = event.target.closest("[data-place]");
+      if (place) {
+        setSourceValue(place.dataset.place);
+        return;
+      }
+      const browse = event.target.closest('[data-testid="browse-open"]');
+      if (browse) {
+        openBrowse();
+      }
+    });
+  }
+
+  function onSettingsInput(event) {
+    const input = event.target.closest("[data-field]");
+    if (!input) return;
+    state.settingsDraft[input.dataset.field] = input.value;
+    state.settingsDirty = true;
+    setSettingsStatus(statusText(), statusTone());
+    clearFieldError(input.dataset.field);
+    hideSettingsNotice();
+  }
+
+  function setSourceValue(path) {
+    const input = $('[data-testid="field-input"][data-field="paths.source_root"]');
+    if (!input) return;
+    input.value = path;
+    state.settingsDraft["paths.source_root"] = path;
+    state.settingsDirty = true;
+    setSettingsStatus(statusText(), statusTone());
+    clearFieldError("paths.source_root");
+    input.focus();
+    checkFolder();
+  }
+
+  function collectValues() {
+    $$("[data-testid='field-input']").forEach((input) => {
+      state.settingsDraft[input.dataset.field] = input.value;
+    });
+    return { ...state.settingsDraft };
+  }
+
+  function fieldErrorElement(key) {
+    return $$('[data-testid="field-error"]').find((element) => element.dataset.field === key) || null;
+  }
+
+  function clearFieldError(key) {
+    const element = fieldErrorElement(key);
+    if (element) {
+      element.hidden = true;
+      element.textContent = "";
+    }
+    const input = $$('[data-testid="field-input"]').find((item) => item.dataset.field === key);
+    if (input) input.removeAttribute("aria-invalid");
+  }
+
+  function clearAllFieldErrors() {
+    $$('[data-testid="field-error"]').forEach((element) => {
+      element.hidden = true;
+      element.textContent = "";
+    });
+    $$('[data-testid="field-input"]').forEach((element) => element.removeAttribute("aria-invalid"));
+  }
+
+  function showFieldErrors(fields) {
+    clearAllFieldErrors();
+    let first = null;
+    for (const key of Object.keys(fields || {})) {
+      if (key === "_") continue;
+      const element = fieldErrorElement(key);
+      if (!element) continue;
+      element.textContent = fieldErrorCopy(fields[key], key);
+      element.title = fields[key];
+      element.hidden = false;
+      const input = $$('[data-testid="field-input"]').find((item) => item.dataset.field === key);
+      if (input) input.setAttribute("aria-invalid", "true");
+      if (!first) first = input || element;
+    }
+    if (first) {
+      const fold = first.closest("details");
+      if (fold) fold.open = true;
+      first.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (typeof first.focus === "function") first.focus({ preventScroll: true });
+    }
+    const general = fields && (fields._ || fields.values);
+    if (general) showSettingsNotice(fieldErrorCopy(general, "_"));
+  }
+
+  function fieldErrorCopy(raw, key) {
+    const text = String(raw || "").toLowerCase();
+    if (text.includes("root does not exist")) return "这个文件夹不存在，请重新选择。";
+    if (text.includes("canonical absolute path")) return "请选择一个真实路径，不要用快捷方式。";
+    if (text.includes("endpoint, model, and revision")) return "服务地址、模型名和版本需要一起填写。";
+    if (text.includes("unknown settings field")) return "这一项已经不再使用。";
+    if (text.includes("must be a string")) return "这一项需要填写文本。";
+    if (text.includes("api key")) return "这个环境变量名需要是有效的名称。";
+    if (text.includes("does not exist")) return "这个路径不存在，请检查后再保存。";
+    return "这一项没有通过检查，请确认后重试。";
+  }
+
+  function warningNote(raw) {
+    const text = String(raw || "").toLowerCase();
+    if (text.startsWith("model root is not a directory") || text.startsWith("asr model root is not a directory")) {
+      return "还没有找到模型文件。真实运行前需要在「模型与运行」里准备好，试运行可以跳过。";
+    }
+    if (text.includes("does not load")) return "现有配置文件读不懂，保存时需要选择修复。";
+    if (text.includes("not utf-8")) return "配置文件不是 UTF-8 编码，保存时需要重写。";
+    if (text.includes("cannot rewrite in place")) return "配置文件里有些格式没法原地修改，保存时会重写整个文件。";
+    if (text.includes("cannot read the existing file")) return "现有配置文件读不到，保存时可能需要重写。";
+    return "有一条设置提示，具体内容在技术细节里。";
+  }
+
+  async function saveSettings(force) {
+    if (state.settingsBusy) return;
+    const values = collectValues();
+    setSettingsBusy(true);
+    hideSettingsNotice();
+    try {
+      const data = await api("PUT", "/api/settings", {
+        values,
+        base_sha256: state.settingsBaseSha,
+        force: Boolean(force),
+      });
+      state.settings = data;
+      state.settingsDraft = draftFromSettings(data);
+      state.settingsBaseSha = data.base_sha256 || "";
+      state.settingsDirty = false;
+      state.settingsSavedAt = Date.now() / 1000;
+      state.settingsLoaded = true;
+      renderSettings();
+      setSettingsStatus(`上次保存 ${fmtClock(state.settingsSavedAt)}`, "ok");
+      toast(force ? "配置文件已修复并保存" : "设置已保存");
+      announce("设置已保存");
+      renderSetup();
+      if (state.meta) refreshMeta();
+    } catch (error) {
+      if (error.code === "invalid_settings" || error.code === "invalid_params") {
+        showFieldErrors(error.fields || {});
+        const count = Object.keys(error.fields || {}).filter((key) => key !== "_").length;
+        setSettingsStatus(count ? `有 ${count} 项需要修改` : "有项目需要修改", "bad");
+      } else if (error.code === "settings_load_error" || error.code === "cannot_rewrite") {
+        showRepair(error);
+      } else if (error.code === "settings_changed") {
+        showSettingsNotice("配置文件在别处被改动过。重新读取设置后再保存。");
+      } else {
+        showSettingsNotice(friendlyError(error));
+      }
+      if (error.offline) {
+        state.online = false;
+        renderService();
+        renderOffline(error);
+      }
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  function showRepair(error) {
+    const repair = $("#settings-repair");
+    if (repair) repair.hidden = false;
+    const tech = $("#repair-error");
+    if (tech) tech.textContent = diagnostic(error);
+    showSettingsNotice("现有配置文件没法直接保存，需要用「修复并保存」重写。");
+  }
+
+  function setSettingsBusy(busy) {
+    state.settingsBusy = busy;
+    const save = $("#settings-save");
+    if (save) {
+      save.disabled = busy;
+      save.textContent = busy ? "正在保存…" : "保存设置";
+    }
+    const preview = $("#settings-preview");
+    if (preview) preview.disabled = busy;
+    const repair = $("#repair-action");
+    if (repair) repair.disabled = busy;
+  }
+
+  function showSettingsNotice(text) {
+    const notice = $("#settings-notice");
+    if (!notice) return;
+    notice.textContent = text;
+    notice.hidden = !text;
+    notice.className = "notice notice--warm";
+  }
+
+  function hideSettingsNotice() {
+    const notice = $("#settings-notice");
+    if (!notice) return;
+    notice.hidden = true;
+    notice.textContent = "";
+  }
+
+  function setCheckResult(text, tone) {
+    const element = $("#check-result");
+    if (!element) return;
+    element.textContent = text;
+    if (tone) element.dataset.tone = tone;
+    else delete element.dataset.tone;
+  }
+
+  async function checkFolder() {
+    const input = $('[data-testid="field-input"][data-field="paths.source_root"]');
+    if (input && !input.value.trim()) {
+      setCheckResult("先选一个文件夹", "bad");
+      input.focus();
+      return;
+    }
+    setCheckResult("正在检查…", "");
+    try {
+      await api("POST", "/api/settings/validate", { values: collectValues() });
+      setCheckResult("可以使用", "ok");
+      clearAllFieldErrors();
+    } catch (error) {
+      if (error.status === 422) {
+        showFieldErrors(error.fields || {});
+        if (error.fields && error.fields["paths.source_root"]) {
+          setCheckResult("还不能使用", "bad");
+        } else {
+          setCheckResult("文件夹没问题，但还有其它设置需要修改", "warn");
+        }
+      } else {
+        setCheckResult(friendlyError(error), "bad");
+      }
+    }
+  }
+
+  async function togglePreview() {
+    const panel = $("#preview-panel");
+    if (panel && !panel.hidden) {
+      closePreview();
+      return;
+    }
+    const button = $("#settings-preview");
+    if (button) button.disabled = true;
+    try {
+      const data = await api("POST", "/api/settings/validate", { values: collectValues() });
+      const panelElement = $("#preview-panel");
+      const pre = $("#preview-pre");
+      if (pre) pre.textContent = data.preview || "";
+      const meta = $("#preview-meta");
+      if (meta) {
+        const sha = (state.settingsBaseSha || "").slice(0, 12);
+        meta.textContent = `${state.settings && state.settings.config_path ? state.settings.config_path : ""}${sha ? ` · 配置版本 ${sha}` : ""}`;
+      }
+      if (panelElement) {
+        panelElement.hidden = false;
+        panelElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+      if (button) button.textContent = "收起预览";
+      clearAllFieldErrors();
+      hideSettingsNotice();
+      announce("已经显示将要写入的内容");
+    } catch (error) {
+      if (error.status === 422) {
+        showFieldErrors(error.fields || {});
+        showSettingsNotice("还有几项需要修改，修改后才能预览。");
+      } else {
+        showSettingsNotice(friendlyError(error));
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function closePreview() {
+    const panel = $("#preview-panel");
+    if (panel) panel.hidden = true;
+    const button = $("#settings-preview");
+    if (button) button.textContent = "查看将写入的内容";
+  }
+
+  function goToSettings(focusKey, reason) {
+    const target = focusKey || "";
+    if (reason) state.settingsReason = reason;
+    if (target) sessionStorage.setItem("subgen.settings.focus", target);
+    if (location.hash === "#/settings") {
+      if (state.settingsLoaded) {
+        renderSettings();
+        focusSettingsTarget(target);
+      } else {
+        loadSettings();
+      }
+    } else {
+      location.hash = "#/settings";
+    }
+  }
+
+  function focusSettingsTarget(target) {
+    if (!target) return;
+    const map = {
+      source: 'paths.source_root',
+      translation: 'translation.endpoint',
+      models: 'paths.model_root',
+    };
+    const key = map[target] || target;
+    const input = $$('[data-testid="field-input"]').find((element) => element.dataset.field === key);
+    if (!input) return;
+    const details = input.closest("details");
+    if (details) details.open = true;
+    input.scrollIntoView({ block: "center", behavior: "smooth" });
+    input.focus({ preventScroll: true });
+  }
+
+  function syncPlaces() {
+    const key = JSON.stringify((state.meta && state.meta.places) || []);
+    if (key === state.lastPlacesKey) return;
+    state.lastPlacesKey = key;
+    const existing = $("#places");
+    if (!existing) return;
+    const chips = placeChipsHtml();
+    existing.innerHTML = chips;
+    existing.hidden = !chips;
+  }
+
+
+  const FOLDER_ICON =
+    '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.8 6.2c0-1 .8-1.8 1.8-1.8h3l1.6 2h5.6c1 0 1.8.8 1.8 1.8v6c0 1-.8 1.8-1.8 1.8H4.6c-1 0-1.8-.8-1.8-1.8V6.2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+
+  function homePath() {
+    const places = state.meta && Array.isArray(state.meta.places) ? state.meta.places : [];
+    const home = places.find((place) => place.key === "home");
+    return home ? home.path : places.length ? places[0].path : "/Users";
+  }
+
+  async function openBrowse() {
+    const modal = $("#browse-modal");
+    if (!modal) return;
+    if (typeof modal.showModal === "function") modal.showModal();
+    else modal.setAttribute("open", "");
+    closePreview();
+
+    const current = fieldValue("paths.source_root").trim();
+    const candidates = [];
+    if (current.startsWith("/")) candidates.push(current);
+    const home = homePath();
+    if (home && !candidates.includes(home)) candidates.push(home);
+
+    $("#browse-list").innerHTML = "";
+    $("#browse-error").hidden = true;
+    $("#browse-empty").hidden = true;
+    $("#browse-truncated").hidden = true;
+    $("#browse-select").disabled = true;
+    $("#browse-up").disabled = true;
+
+    let lastError = null;
+    for (const candidate of candidates) {
+      const ok = await loadBrowse(candidate);
+      if (ok) return;
+      lastError = state.browseLastError;
+    }
+    if (lastError) {
+      $("#browse-loading").hidden = true;
+      const error = $("#browse-error");
+      error.hidden = false;
+      error.textContent = browseErrorCopy(lastError);
+      const path = $("#browse-path");
+      if (path) path.textContent = current || home || "—";
+    }
+  }
+
+  async function loadBrowse(path) {
+    const loading = $("#browse-loading");
+    const error = $("#browse-error");
+    const list = $("#browse-list");
+    if (loading) loading.hidden = false;
+    if (error) error.hidden = true;
+    if (list) list.innerHTML = "";
+    $("#browse-empty").hidden = true;
+    $("#browse-truncated").hidden = true;
+    $("#browse-select").disabled = true;
+    const pathLabel = $("#browse-path");
+    if (pathLabel) pathLabel.textContent = path || "—";
+    try {
+      const data = await api("GET", `/api/browse?path=${encodeURIComponent(path)}`);
+      state.browsePath = data.path;
+      state.browseParent = data.parent;
+      state.browseLoaded = true;
+      state.browseLastError = null;
+      if (pathLabel) pathLabel.textContent = data.path;
+      const up = $("#browse-up");
+      if (up) up.disabled = !data.parent;
+      const entries = Array.isArray(data.entries) ? data.entries : [];
+      if (list) {
+        list.innerHTML = entries
+          .map(
+            (entry) =>
+              `<li><button class="browse-entry" type="button" data-testid="browse-entry" data-path="${esc(entry.path)}" title="${esc(entry.path)}">${FOLDER_ICON}<span>${esc(entry.name)}</span></button></li>`
+          )
+          .join("");
+      }
+      $("#browse-empty").hidden = entries.length > 0;
+      $("#browse-truncated").hidden = !data.truncated;
+      $("#browse-loading").hidden = true;
+      $("#browse-select").disabled = false;
+      return true;
+    } catch (err) {
+      state.browseLoaded = false;
+      state.browseLastError = err;
+      $("#browse-loading").hidden = true;
+      if (error) {
+        error.hidden = false;
+        error.textContent = browseErrorCopy(err);
+      }
+      const up = $("#browse-up");
+      if (up) up.disabled = true;
+      $("#browse-select").disabled = true;
+      if (err.code === "not_found") {
+        if (pathLabel) pathLabel.textContent = path;
+      }
+      return false;
+    }
+  }
+
+  function browseErrorCopy(error) {
+    if (!error) return "这个文件夹打不开。";
+    if (error.offline) return "连不上本地服务，等它恢复后再试。";
+    switch (error.code) {
+      case "invalid_path":
+        return "这个路径不是绝对路径，没法打开。";
+      case "not_a_directory":
+        return "这个文件夹不存在，或者它其实是一个文件。可以返回上一级再找。";
+      case "forbidden_path":
+        return "没有权限打开这个文件夹。换一个文件夹试试。";
+      case "not_found":
+        return "这个版本的服务还不能浏览文件夹。可以直接在设置里填写路径。";
+      default:
+        return "这个文件夹打不开，可以返回上一级，或者直接填写路径。";
+    }
+  }
+
+  function closeBrowse() {
+    const modal = $("#browse-modal");
+    if (!modal) return;
+    if (modal.open) modal.close();
+    else modal.removeAttribute("open");
+  }
+
+  async function selectBrowse() {
+    if (!state.browseLoaded || !state.browsePath) return;
+    const selected = state.browsePath;
+    closeBrowse();
+    setSourceValue(selected);
+  }
+
+
+  function confirmAction(options) {
+    return new Promise((resolve) => {
+      const dialog = $("#confirm-dialog");
+      if (!dialog) {
+        resolve(false);
+        return;
+      }
+      state.confirmResolve = resolve;
+      $("#confirm-kicker").textContent = options.kicker || "确认";
+      $("#confirm-title").textContent = options.title || "确认";
+      $("#confirm-body").textContent = options.body || "确定要继续吗？";
+      const ok = $("#confirm-ok");
+      ok.textContent = options.confirmLabel || "确认";
+      ok.className = options.danger ? "btn btn--primary btn--danger" : "btn btn--primary";
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    });
+  }
+
+  function settleConfirm(value) {
+    const resolve = state.confirmResolve;
+    state.confirmResolve = null;
+    if (resolve) resolve(value);
+  }
+
+  function askExternal(detail) {
+    return new Promise((resolve) => {
+      const dialog = $("#external-ack");
+      if (!dialog) {
+        resolve(false);
+        return;
+      }
+      state.ackResolve = resolve;
+      const element = $("#ack-detail");
+      if (element) element.textContent = detail || "进度文件里出现了不是这个页面写入的记录。";
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    });
+  }
+
+  function settleAck(value) {
+    const resolve = state.ackResolve;
+    state.ackResolve = null;
+    if (resolve) resolve(value);
+  }
+
+  function openHelp() {
+    const dialog = $("#help-modal");
+    if (!dialog) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  function closeHelp() {
+    const dialog = $("#help-modal");
+    if (!dialog) return;
+    if (dialog.open) dialog.close();
+    else dialog.removeAttribute("open");
+  }
+
+  function closeDialog(dialog) {
+    if (!dialog) return;
+    if (dialog.open) dialog.close();
+    else dialog.removeAttribute("open");
+  }
+
+
+  function bindDialogClose(selector, settle) {
+    const dialog = $(selector);
+    if (!dialog) return;
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) closeDialog(dialog);
+    });
+    dialog.addEventListener("close", () => settle(false));
+  }
+
+  function bindEvents() {
+    $("#create-open").addEventListener("click", openCreate);
+    $$(".help-trigger").forEach((button) => button.addEventListener("click", openHelp));
+    $("#help-close").addEventListener("click", closeHelp);
+    $("#help-settings-link").addEventListener("click", closeHelp);
+
+    $("#offline-retry").addEventListener("click", async () => {
+      await refreshMeta();
+      if (state.route.name === "jobs") await refreshJobs(false);
+      if (state.route.name === "settings" && !state.settingsLoaded) loadSettings();
+      if (state.route.name === "detail" && state.detailJobId) openDetail(state.detailJobId);
     });
 
-    $("#job-list").addEventListener("click", function (event) {
-      var button = event.target.closest("[data-action]");
-      if (!button) return;
-      var jobId = button.dataset.job;
+    $("#jobs-retry").addEventListener("click", () => refreshJobs(false));
+
+    $("#job-list").addEventListener("click", (event) => {
+      const action = event.target.closest("[data-action]");
+      if (!action) return;
+      const row = event.target.closest("[data-job-id]");
+      if (!row) return;
+      closeMenus();
+      const jobId = row.dataset.jobId;
+      if (action.dataset.action === "rerun") rerunJob(jobId);
+      else if (action.dataset.action === "delete") deleteJob(jobId);
+      else if (action.dataset.action === "cancel") cancelJob(jobId);
+    });
+
+    document.addEventListener("click", (event) => {
+      const settingsLink = event.target.closest("[data-settings-focus]");
+      if (settingsLink) {
+        event.preventDefault();
+        goToSettings(settingsLink.dataset.settingsFocus);
+        return;
+      }
+      const setupLink = event.target.closest("[data-goto]");
+      if (setupLink) {
+        event.preventDefault();
+        goToSettings(setupLink.dataset.goto);
+        return;
+      }
+      const menu = event.target.closest(".menu");
+      closeMenus(menu);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeMenus();
+    });
+
+    $("#detail-retry").addEventListener("click", () => {
+      if (!state.detailJobId) return;
+      openDetail(state.detailJobId);
+    });
+
+    $("#detail-copy").addEventListener("click", async () => {
+      const jobId = $("#detail-copy").dataset.jobId || (detailUI.job && detailUI.job.job_id);
       if (!jobId) return;
-      var action = button.dataset.action;
-      if (action === "cancel") cancelJob(jobId);
-      else if (action === "rerun") rerunJob(jobId, false);
-      else if (action === "delete") deleteJob(jobId);
-    });
-
-    $("#job-detail").addEventListener("click", function (event) {
-      var actionEl = event.target.closest("[data-act]");
-      if (!actionEl) return;
-      if (actionEl.dataset.act === "reload-detail" && app.route.name === "detail") {
-        openDetail(app.route.id);
+      try {
+        await navigator.clipboard.writeText(jobId);
+        toast("任务编号已复制");
+      } catch (error) {
+        toast("复制失败，可以手动选中编号", "error");
       }
     });
 
-    $("#settings-body").addEventListener("click", function (event) {
-      var actionEl = event.target.closest("[data-act]");
-      if (!actionEl) return;
-      var action = actionEl.dataset.act;
-      if (action === "repair") saveSettings(true);
-      else if (action === "force") saveSettings(true);
-      else if (action === "reload-settings") loadSettings();
+    $("#cancel-button").addEventListener("click", () => {
+      if (detailUI.job) cancelJob(detailUI.job.job_id);
     });
+    $("#rerun-button").addEventListener("click", () => {
+      if (detailUI.job) rerunJob(detailUI.job.job_id);
+    });
+    $("#delete-button").addEventListener("click", () => {
+      if (detailUI.job) deleteJob(detailUI.job.job_id);
+    });
+
+    const logPanel = $("#log-panel");
+    if (logPanel) {
+      logPanel.addEventListener("scroll", () => {
+        detailUI.logPinned = logPanel.scrollHeight - logPanel.scrollTop - logPanel.clientHeight < 40;
+      });
+    }
+
+    $("#create-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitCreate(false);
+    });
+    $("#create-cancel").addEventListener("click", closeCreate);
+    $$("[data-choice]").forEach((choice) => {
+      const input = $('input[name="scope"]', choice);
+      if (input) input.addEventListener("change", syncCreateChoice);
+    });
+    $("#create-limit").addEventListener("focus", () => {
+      const limitScope = $("#create-scope-limit");
+      if (limitScope) {
+        limitScope.checked = true;
+        syncCreateChoice();
+      }
+    });
+    $("#create-limit").addEventListener("click", (event) => event.stopPropagation());
+    $("#create-notice-link").addEventListener("click", closeCreate);
+    $("#create-busy-link").addEventListener("click", (event) => {
+      const jobId = event.currentTarget.dataset.jobId;
+      closeCreate();
+      if (jobId) location.hash = `#/jobs/${encodeURIComponent(jobId)}`;
+    });
+    $("#settings-retry").addEventListener("click", loadSettings);
+    $("#settings-preview").addEventListener("click", togglePreview);
+    $("#preview-close").addEventListener("click", closePreview);
+    $("#repair-action").addEventListener("click", () => saveSettings(true));
+
+    $("#browse-up").addEventListener("click", () => {
+      if (state.browseParent) loadBrowse(state.browseParent);
+    });
+    $("#browse-list").addEventListener("click", (event) => {
+      const entry = event.target.closest("[data-path]");
+      if (entry) loadBrowse(entry.dataset.path);
+    });
+    $("#browse-select").addEventListener("click", selectBrowse);
+    $("#browse-cancel").addEventListener("click", () => {
+      closeBrowse();
+      const input = $('[data-testid="field-input"][data-field="paths.source_root"]');
+      if (input) input.focus();
+    });
+
+    $("#confirm-ok").addEventListener("click", () => {
+      const resolve = state.confirmResolve;
+      state.confirmResolve = null;
+      closeDialog($("#confirm-dialog"));
+      if (resolve) resolve(true);
+    });
+    $("#confirm-cancel").addEventListener("click", () => {
+      const resolve = state.confirmResolve;
+      state.confirmResolve = null;
+      closeDialog($("#confirm-dialog"));
+      if (resolve) resolve(false);
+    });
+
+    $("#ack-confirm").addEventListener("click", () => {
+      const resolve = state.ackResolve;
+      state.ackResolve = null;
+      closeDialog($("#external-ack"));
+      if (resolve) resolve(true);
+    });
+    $("#ack-cancel").addEventListener("click", () => {
+      const resolve = state.ackResolve;
+      state.ackResolve = null;
+      closeDialog($("#external-ack"));
+      if (resolve) resolve(false);
+    });
+
+    bindDialogClose("#confirm-dialog", settleConfirm);
+    bindDialogClose("#external-ack", settleAck);
 
     window.addEventListener("hashchange", handleRoute);
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        stopDetailPolling();
+        return;
+      }
+      refreshMeta();
+      if (state.route.name === "jobs") refreshJobs(true);
+      if (state.route.name === "detail" && state.detailJobId) startDetailPolling(0);
+    });
+
+    window.addEventListener("storage", (event) => {
+      if (event.key === "subgen.settings.focus" && state.route.name === "settings" && state.settingsLoaded) {
+        const target = sessionStorage.getItem("subgen.settings.focus");
+        sessionStorage.removeItem("subgen.settings.focus");
+        if (target) focusSettingsTarget(target);
+      }
+    });
   }
 
-  function boot() {
-    bindStaticEvents();
-    updateClock();
-    app.clockTimer = setInterval(updateClock, 1000);
 
+  function init() {
     if (!location.hash) {
-      try {
-        history.replaceState(null, "", "#/jobs");
-      } catch (err) {
-        location.hash = "#/jobs";
-      }
+      history.replaceState(null, "", "#/jobs");
     }
-
+    bindEvents();
+    renderService();
+    renderOffline(null);
     handleRoute();
-    refreshMeta();
-    scheduleMeta(META_INTERVAL);
+
+    refreshMeta().finally(scheduleMeta);
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
+    document.addEventListener("DOMContentLoaded", init);
   } else {
-    boot();
+    init();
   }
 })();

@@ -3,257 +3,544 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#0d0a08">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#f7f2e8">
 <meta name="robots" content="noindex, nofollow">
-<title>作业 · subgen 控制台</title>
-<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSIjMGQwYTA4Ii8+PHJlY3QgeD0iNiIgeT0iNiIgd2lkdGg9IjQiIGhlaWdodD0iMjAiIGZpbGw9IiNlOGEzM2QiLz48cmVjdCB4PSIxMyIgeT0iNiIgd2lkdGg9IjEyIiBoZWlnaHQ9IjQiIGZpbGw9IiNlOGUzZGEiLz48cmVjdCB4PSIxMyIgeT0iMTQiIHdpZHRoPSI4IiBoZWlnaHQ9IjQiIGZpbGw9IiNlOGUzZGEiLz48cmVjdCB4PSIxMyIgeT0iMjIiIHdpZHRoPSI1IiBoZWlnaHQ9IjQiIGZpbGw9IiNlOGUzZGEiLz48L3N2Zz4=">
+<title>任务 · subgen 字幕工坊</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f6b56'/%3E%3Crect x='7' y='17' width='18' height='3' rx='1.5' fill='%23f7f2e8'/%3E%3Crect x='10' y='23' width='12' height='3' rx='1.5' fill='%23f7f2e8' opacity='.7'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
 <a class="skip-link" href="#main">跳到主要内容</a>
 
-<header class="app-header" data-testid="app-header">
-  <div class="masthead">
-    <a class="brand" href="#/jobs" aria-label="subgen 控制台，返回作业列表">
-      <span class="brand-rule" aria-hidden="true"></span>
-      <span class="brand-title">subgen</span>
-      <span class="brand-sub">本地字幕流水线控制台</span>
+<header class="masthead" data-testid="app-header">
+  <div class="masthead-inner">
+    <a class="brand" href="#/jobs" aria-label="subgen 字幕工坊，回到任务列表">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="3.2" y="4.4" width="17.6" height="15.2" rx="3.4" stroke="currentColor" stroke-width="1.5"/><path d="M7.4 14.6h9.2M9.6 17.6h4.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M10.4 8.2c0-.7.8-1.1 1.4-.7l3.2 2.1c.6.4.6 1.2 0 1.6l-3.2 2.1c-.6.4-1.4 0-1.4-.7V8.2z" fill="currentColor"/></svg>
+      </span>
+      <span class="brand-copy">
+        <span class="brand-name">subgen</span>
+        <span class="brand-sub">字幕工坊</span>
+      </span>
     </a>
 
-    <nav class="tabs" aria-label="主导航">
-      <a class="tab" href="#/jobs" data-nav="jobs"><span class="tab-num" aria-hidden="true">01</span>作业</a>
-      <a class="tab" href="#/settings" data-nav="settings"><span class="tab-num" aria-hidden="true">02</span>参数设置</a>
+    <nav class="nav" aria-label="主导航">
+      <a class="nav-link" href="#/jobs" data-testid="nav-jobs" data-nav="jobs">任务</a>
+      <a class="nav-link" href="#/settings" data-testid="nav-settings" data-nav="settings">设置</a>
     </nav>
 
-    <div class="conn" id="conn" data-conn="pending">
-      <span class="conn-dot" aria-hidden="true"></span>
-      <span class="conn-text" id="conn-text">连接中</span>
-      <span class="conn-clock mono" id="conn-clock" aria-hidden="true">--:--:--</span>
+    <div class="masthead-aside">
+      <p class="service" id="service-status" data-testid="service-status" data-state="pending" aria-live="polite">
+        <span class="service-dot" aria-hidden="true"></span>
+        <span class="service-text">正在连接本地服务</span>
+      </p>
+      <button class="text-button help-trigger" type="button" id="help-open" data-testid="help-open">怎么用</button>
     </div>
   </div>
-
-  <div class="status-strip">
-    <div class="status-strip-in">
-      <div class="stat">
-        <span class="stat-k">工作目录</span>
-        <span class="stat-v mono" id="meta-work-root" title="work_root">—</span>
-      </div>
-      <div class="stat">
-        <span class="stat-k">清单</span>
-        <span class="stat-v mono" id="meta-inventory">—</span>
-      </div>
-      <div class="stat">
-        <span class="stat-k">活动作业</span>
-        <span class="stat-v mono" id="meta-active">—</span>
-      </div>
-      <div class="stat">
-        <span class="stat-k">参数设置</span>
-        <span class="stat-v" id="meta-settings"><a href="#/settings">—</a></span>
-      </div>
-      <div class="stat stat--end">
-        <span class="stat-k">轮询</span>
-        <span class="stat-v" id="meta-poll">启动中</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="run-strip" id="run-strip" hidden aria-hidden="true"><i></i></div>
 </header>
 
-<main class="app-main" id="main">
+<main class="shell" id="main">
 
-  <div class="offline-banner" id="offline-banner" hidden role="alert">
-    <span class="offline-mark" aria-hidden="true">!</span>
-    <div class="offline-copy">
-      <strong>无法连接本地服务</strong>
-      <p>subgen web 可能已停止或端口已变化。页面每 5 秒自动重试；重新运行 <code class="mono">subgen web</code> 后无需刷新。</p>
+  <div class="offline" id="offline-banner" data-testid="offline-banner" role="status" hidden>
+    <div class="offline-body">
+      <p class="offline-title">无法连接本地服务</p>
+      <p class="offline-copy">页面每 5 秒自动重试。如果一直没有恢复，回到终端确认 <code class="mono">subgen web</code> 还在运行，然后刷新这一页。</p>
       <p class="offline-detail mono" id="offline-detail"></p>
     </div>
+    <button class="btn btn--quiet btn--small" type="button" id="offline-retry">立即重试</button>
   </div>
 
-  <!-- ============================== 作业列表 ============================== -->
-  <section class="view" id="jobs-view" data-testid="jobs-view" hidden aria-labelledby="jobs-title">
-    <div class="view-head">
-      <h1 id="jobs-title">作业</h1>
-      <p class="view-sub">创建一次运行，或查看已经结束的运行。</p>
-      <span class="view-rule" aria-hidden="true"></span>
+  <section class="view" id="jobs-view" data-testid="jobs-view" hidden>
+
+    <div class="jobs-boot" id="jobs-boot" aria-hidden="true">
+      <span class="skeleton skeleton--hero"></span>
+      <span class="skeleton skeleton--line"></span>
+      <div class="skeleton-card skeleton-card--tall"></div>
     </div>
 
-    <div class="jobs-grid">
-      <aside class="panel create-panel" aria-labelledby="create-title">
-        <header class="panel-head">
-          <h2 id="create-title">新建作业</h2>
-          <span class="panel-hint">七阶段顺序执行</span>
-        </header>
-
-        <div class="create-lock" id="create-lock" hidden>
-          <span class="lock-mark" aria-hidden="true">■</span>
-          <div>
-            <p class="lock-title">有作业正在运行</p>
-            <p class="lock-body">同一工作目录一次只能运行一个作业。结束或取消后即可创建。</p>
-            <a class="lock-link" id="create-lock-link" href="#/jobs">查看当前作业 →</a>
-          </div>
-        </div>
-
-        <div class="create-notice" id="create-settings-notice" hidden>
-          <p>参数设置无法加载，创建会被拒绝。</p>
-          <a href="#/settings">去修复参数设置 →</a>
-        </div>
-
-        <form class="create-form" id="create-form" data-testid="create-form" novalidate>
-          <div class="field-row-inline">
-            <label for="create-limit">限流数量 <span class="opt">可选</span></label>
-            <input class="input" id="create-limit" data-testid="create-limit" name="limit"
-                   type="number" min="0" step="1" inputmode="numeric"
-                   placeholder="留空 = 整份清单" autocomplete="off">
-            <p class="field-hint">处理前 N 个视频。留空表示不限制。</p>
-            <p class="field-error" data-create-error="limit" hidden></p>
-          </div>
-
-          <div class="field-row-inline">
-            <label for="create-video-ids">指定视频 ID <span class="opt">可选</span></label>
-            <textarea class="input input--area" id="create-video-ids" data-testid="create-video-ids"
-                      name="video_ids" rows="3" spellcheck="false" autocomplete="off"
-                      placeholder="每行一个 64 位小写十六进制 ID"></textarea>
-            <p class="field-hint">只跑指定视频，可换行或逗号分隔。</p>
-            <p class="field-error" data-create-error="video_ids" hidden></p>
-          </div>
-
-          <div class="batch-grid">
-            <div class="field-row-inline">
-              <label for="create-asr-batch">ASR 批大小</label>
-              <input class="input" id="create-asr-batch" data-testid="create-asr-batch" name="asr_batch_size"
-                     type="number" min="1" step="1" inputmode="numeric" value="32" autocomplete="off">
-              <p class="field-error" data-create-error="asr_batch_size" hidden></p>
-            </div>
-            <div class="field-row-inline">
-              <label for="create-align-batch">对齐批大小</label>
-              <input class="input" id="create-align-batch" data-testid="create-align-batch" name="alignment_batch_size"
-                     type="number" min="1" step="1" inputmode="numeric" value="16" autocomplete="off">
-              <p class="field-error" data-create-error="alignment_batch_size" hidden></p>
-            </div>
-          </div>
-
-          <div class="toggles">
-            <label class="switch-row" for="create-skip-inventory">
-              <span class="switch-copy">
-                <span class="switch-title">跳过清点</span>
-                <span class="switch-note">复用现有清单快照</span>
-              </span>
-              <input type="checkbox" id="create-skip-inventory" data-testid="create-skip-inventory" name="skip_inventory">
-              <span class="switch" aria-hidden="true"></span>
-            </label>
-            <label class="switch-row" for="create-skip-extract">
-              <span class="switch-copy">
-                <span class="switch-title">跳过抽取</span>
-                <span class="switch-note">复用已有音频</span>
-              </span>
-              <input type="checkbox" id="create-skip-extract" data-testid="create-skip-extract" name="skip_extract">
-              <span class="switch" aria-hidden="true"></span>
-            </label>
-            <label class="switch-row switch-row--dry" for="create-dry-run">
-              <span class="switch-copy">
-                <span class="switch-title">试运行</span>
-                <span class="switch-note">只构建命令，不启动阶段</span>
-              </span>
-              <input type="checkbox" id="create-dry-run" data-testid="create-dry-run" name="dry_run">
-              <span class="switch" aria-hidden="true"></span>
-            </label>
-          </div>
-
-          <div class="create-error" id="create-error" data-testid="create-error" hidden aria-live="polite"></div>
-
-          <div class="create-actions">
-            <button class="btn btn--primary" type="submit" id="create-submit" data-testid="create-submit">创建作业</button>
-            <span class="create-hint">每次提交生成新的 client_token</span>
-          </div>
-        </form>
-      </aside>
-
-      <div class="panel list-panel" aria-labelledby="list-title">
-        <header class="panel-head">
-          <h2 id="list-title">作业列表</h2>
-          <span class="panel-hint" id="job-list-count">—</span>
-          <button class="btn btn--tiny btn--ghost" type="button" id="list-refresh">刷新</button>
-        </header>
-
-        <div class="list-loading" id="jobs-loading" hidden aria-hidden="true">
-          <div class="skeleton-row"><span class="skeleton skeleton--id"></span><span class="skeleton skeleton--wide"></span><span class="skeleton skeleton--bar"></span></div>
-          <div class="skeleton-row"><span class="skeleton skeleton--id"></span><span class="skeleton skeleton--wide"></span><span class="skeleton skeleton--bar"></span></div>
-          <div class="skeleton-row"><span class="skeleton skeleton--id"></span><span class="skeleton skeleton--wide"></span><span class="skeleton skeleton--bar"></span></div>
-        </div>
-
-        <div class="list-error" id="jobs-error" hidden></div>
-
-        <ol class="job-list" id="job-list" data-testid="job-list" aria-label="作业列表"></ol>
-
-        <div class="empty" id="job-empty" data-testid="job-empty" hidden>
-          <div class="empty-mark" aria-hidden="true">— — —</div>
-          <h3>尚无作业</h3>
-          <p>用左侧面板创建第一次运行。先勾选「试运行」，可以在不启动模型的情况下验证将要执行的命令。</p>
-          <p class="empty-stages" aria-hidden="true">01 清点 · 02 抽取 · 03 转写 · 04 对齐 · 05 主翻译 · 06 复核 · 07 发布</p>
-        </div>
+    <div class="callout callout--error" id="jobs-error" hidden role="alert">
+      <p class="callout-title">任务列表没有读出来</p>
+      <p class="callout-copy" id="jobs-error-copy">本地服务暂时没有响应。</p>
+      <div class="callout-actions">
+        <button class="btn btn--quiet btn--small" type="button" id="jobs-retry">重试</button>
       </div>
+      <details class="tech"><summary>技术细节</summary><pre class="tech-pre" id="jobs-error-tech"></pre></details>
+    </div>
+
+    <div class="jobs-empty" id="jobs-empty" data-testid="job-empty" hidden>
+      <section class="hero" data-testid="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>本地运行 · 日语视频转简体中文</p>
+          <h1 class="hero-title" id="hero-title">把视频变成<br>中文字幕</h1>
+          <p class="hero-lede">选择存有日语视频的文件夹，subgen 会识别语音、翻译成简体中文，并在每个视频旁边写入同名字幕。</p>
+          <div class="hero-actions" id="hero-actions">
+            <button class="btn btn--primary" type="button" id="create-open" data-testid="create-open">开始生成字幕</button>
+            <button class="btn btn--quiet help-trigger" type="button">先看看怎么用</button>
+          </div>
+          <p class="hero-note">
+            <svg class="hero-note-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M5.6 7V5.3a2.4 2.4 0 0 1 4.8 0V7" stroke="currentColor" stroke-width="1.3"/></svg>
+            视频不会上传，处理都在本机完成。
+          </p>
+        </div>
+        <div class="hero-art">
+          <svg class="hero-svg" viewBox="0 0 440 360" fill="none" role="img" aria-label="一张手绘纸片，上面是视频画面、播放按钮和两行中文字幕">
+            <rect x="70" y="54" width="304" height="238" rx="16" fill="#f0e5d0" transform="rotate(3.4 222 173)"/>
+            <rect x="34" y="40" width="66" height="19" rx="3" fill="#e9dcc2" transform="rotate(-11 67 49)" opacity=".9"/>
+            <rect x="54" y="58" width="316" height="238" rx="16" fill="#fffdf8" stroke="#23201b" stroke-width="1.4"/>
+            <rect x="74" y="78" width="276" height="146" rx="9" fill="#f4ebd9" stroke="#23201b" stroke-width="1.2"/>
+            <ellipse cx="212" cy="151" rx="42" ry="40" fill="#e7f0e9"/>
+            <path d="M200 137.4c0-2.5 2.8-4 4.9-2.6l17.5 11.6c1.9 1.3 1.9 4 0 5.3l-17.5 11.6c-2.1 1.4-4.9-.1-4.9-2.6V137.4z" fill="#1f6b56"/>
+            <path d="M74 190c20-13 35-21 52-15 17 6 25 17 44 5 18-11 30-24 52-19 18 4 33 16 55 9 15-5 27-14 45-12" stroke="#d9caae" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="318" cy="104" r="11" fill="#fffdf8" stroke="#1f6b56" stroke-width="1.2" stroke-dasharray="2.4 3.2"/>
+            <path d="M318 99v5.6l3.8 2.4" stroke="#1f6b56" stroke-width="1.3" stroke-linecap="round"/>
+            <rect x="74" y="208" width="276" height="4" rx="2" fill="#e9dfca"/>
+            <rect x="74" y="208" width="118" height="4" rx="2" fill="#c96a3b" opacity=".8"/>
+            <rect x="94" y="240" width="190" height="10" rx="5" fill="#ded1b6"/>
+            <rect x="94" y="262" width="228" height="10" rx="5" fill="#e7f0e9"/>
+            <path d="M94 263h228" stroke="#1f6b56" stroke-width="1.4" stroke-linecap="round" opacity=".55"/>
+            <path d="M96 284c58 4.6 154 3.8 222-1.2" stroke="#1f6b56" stroke-width="3" stroke-linecap="round"/>
+            <path d="M366 32l3.1 8.1 8.1 3.1-8.1 3.1-3.1 8.1-3.1-8.1-8.1-3.1 8.1-3.1 3.1-8.1z" fill="#c96a3b" opacity=".85"/>
+            <circle cx="60" cy="318" r="4" fill="#1f6b56" opacity=".35"/>
+            <circle cx="392" cy="284" r="5.5" fill="#e7f0e9" stroke="#1f6b56" stroke-width="1.2" opacity=".8"/>
+          </svg>
+        </div>
+      </section>
+
+      <section class="setup" data-testid="setup-checklist" aria-labelledby="setup-title">
+        <header class="setup-head">
+          <div>
+            <h2 class="setup-title" id="setup-title">开始前，先准备好这几件事</h2>
+            <p class="setup-lede">三项都准备好以后，就可以新建任务了。</p>
+          </div>
+          <p class="setup-count" id="setup-count">正在读取设置…</p>
+        </header>
+        <ul class="setup-list">
+          <li class="setup-item" data-testid="setup-item" data-item="source">
+            <span class="setup-index" aria-hidden="true">01</span>
+            <div class="setup-body">
+              <p class="setup-label">视频文件夹</p>
+              <p class="setup-value mono" id="setup-source-path">正在读取…</p>
+            </div>
+            <p class="setup-state" id="setup-source-state" data-tone="muted">正在读取</p>
+            <a class="setup-link" href="#/settings" data-goto="source">去设置<span aria-hidden="true"> →</span></a>
+          </li>
+          <li class="setup-item" data-testid="setup-item" data-item="translation">
+            <span class="setup-index" aria-hidden="true">02</span>
+            <div class="setup-body">
+              <p class="setup-label">翻译服务</p>
+              <p class="setup-value" id="setup-translation-note">正在读取…</p>
+            </div>
+            <p class="setup-state" id="setup-translation-state" data-tone="muted">正在读取</p>
+            <a class="setup-link" href="#/settings" data-goto="translation">去设置<span aria-hidden="true"> →</span></a>
+          </li>
+          <li class="setup-item" data-testid="setup-item" data-item="models">
+            <span class="setup-index" aria-hidden="true">03</span>
+            <div class="setup-body">
+              <p class="setup-label">模型文件</p>
+              <p class="setup-value" id="setup-models-note">正在读取…</p>
+            </div>
+            <p class="setup-state" id="setup-models-state" data-tone="muted">正在读取</p>
+            <a class="setup-link" href="#/settings" data-goto="models">去设置<span aria-hidden="true"> →</span></a>
+          </li>
+        </ul>
+      </section>
+    </div>
+
+    <div class="jobs-live" id="jobs-live" hidden>
+      <header class="list-head">
+        <div class="list-heading">
+          <h2 class="section-title">最近的任务</h2>
+          <p class="list-count" id="jobs-count">正在读取…</p>
+        </div>
+        <div class="list-action" id="list-action"></div>
+      </header>
+
+      <div class="notice notice--warm" id="jobs-setup-notice" hidden>
+        <p id="jobs-setup-notice-text"></p>
+        <a class="text-link" href="#/settings">去设置<span aria-hidden="true"> →</span></a>
+      </div>
+
+      <ol class="job-list" id="job-list" data-testid="job-list" aria-label="任务列表"></ol>
+      <p class="list-empty" id="list-empty" hidden>还没有任务。点右上角的「新建任务」开始。</p>
     </div>
   </section>
 
-  <!-- ============================== 作业详情 ============================== -->
-  <section class="view" id="job-detail" data-testid="job-detail" hidden aria-label="作业详情"></section>
+  <section class="view" id="job-detail" data-testid="job-detail" hidden>
 
-  <!-- ============================== 参数设置 ============================== -->
-  <section class="view" id="settings-view" data-testid="settings-view" hidden aria-labelledby="settings-title">
-    <div class="view-head">
-      <h1 id="settings-title">参数设置</h1>
-      <p class="view-sub">编辑 subgen.toml，环境变量优先于文件。</p>
-      <span class="view-rule" aria-hidden="true"></span>
+    <div class="detail-loading" id="detail-loading" aria-hidden="true">
+      <span class="skeleton skeleton--back"></span>
+      <span class="skeleton skeleton--heading"></span>
+      <div class="skeleton-card skeleton-card--tall"><span class="skeleton skeleton--line"></span><span class="skeleton skeleton--bar"></span></div>
+      <div class="skeleton-card skeleton-card--tall"></div>
     </div>
-    <div id="settings-body"></div>
+
+    <div class="callout callout--error" id="detail-error" hidden>
+      <p class="callout-title" id="detail-error-title">这个任务没有读出来</p>
+      <p class="callout-copy" id="detail-error-copy">它可能已经被删除，或者本地服务断开了。</p>
+      <div class="callout-actions">
+        <button class="btn btn--quiet btn--small" type="button" id="detail-retry">重试</button>
+        <a class="btn btn--quiet btn--small" href="#/jobs">返回任务</a>
+      </div>
+      <details class="tech"><summary>技术细节</summary><pre class="tech-pre" id="detail-error-tech"></pre></details>
+    </div>
+
+    <div id="detail-content" hidden>
+      <a class="back-link" href="#/jobs"><span aria-hidden="true">←</span> 返回任务</a>
+
+      <header class="detail-head">
+        <div class="detail-title-row">
+          <h1 class="detail-title" id="detail-title" data-testid="job-title">任务</h1>
+          <span class="pill" id="detail-state" data-testid="job-state">进行中</span>
+        </div>
+        <p class="detail-id">
+          <span>任务编号</span>
+          <code class="mono" id="detail-id-text">—</code>
+          <button class="text-button text-button--small" type="button" id="detail-copy">复制</button>
+        </p>
+      </header>
+
+      <section class="progress-card" data-testid="job-progress" aria-labelledby="progress-title">
+        <div class="progress-main">
+          <p class="progress-kicker" id="progress-kicker">正在进行</p>
+          <h2 class="progress-title" id="progress-title">正在识别语音</h2>
+          <p class="progress-sub" id="progress-sub">正在读取进度…</p>
+          <p class="progress-meta" id="progress-meta"></p>
+          <div class="progress-track" id="progress-track" hidden><span class="progress-fill" id="progress-fill"></span></div>
+          <p class="progress-latest" id="progress-latest" hidden></p>
+          <button class="text-button text-button--danger" type="button" id="cancel-button" data-testid="cancel-button" hidden>取消任务</button>
+        </div>
+      </section>
+
+      <section class="failure-card" id="job-failure" data-testid="job-failure" hidden aria-labelledby="failure-title">
+        <p class="failure-kicker">为什么停下</p>
+        <h2 class="failure-title" id="failure-title">这次没有完成</h2>
+        <p class="failure-hint" id="job-error-hint" data-testid="job-error-hint"></p>
+        <p class="failure-line" id="job-failure-line"></p>
+        <details class="tech">
+          <summary>查看技术日志</summary>
+          <pre class="tech-pre" id="failure-log"></pre>
+        </details>
+      </section>
+
+      <section class="rail-card" aria-labelledby="rail-title">
+        <div class="rail-head">
+          <h2 class="section-title" id="rail-title">任务进行到哪一步</h2>
+          <p class="rail-note">把七个处理阶段合并成四步。</p>
+        </div>
+        <ol class="phase-rail" id="phase-rail" data-testid="phase-rail"></ol>
+      </section>
+
+      <div class="detail-actions" id="detail-actions">
+        <button class="btn btn--quiet" type="button" id="rerun-button" data-testid="rerun-button" hidden>重跑</button>
+        <button class="text-button text-button--danger" type="button" id="delete-button" data-testid="delete-button" hidden>删除任务</button>
+      </div>
+
+      <section class="details-card" aria-labelledby="details-title">
+        <details class="details-fold" id="details-fold">
+          <summary data-testid="details-toggle">
+            <span class="details-summary-text">
+              <span class="details-title" id="details-title">处理细节</span>
+              <span class="details-sub">七个阶段、命令、每个视频的进度和运行日志</span>
+            </span>
+            <span class="fold-mark" aria-hidden="true"></span>
+          </summary>
+          <div class="details-body" data-testid="stage-detail">
+            <h3 class="sub-title">七个处理阶段</h3>
+            <div class="stage-scroll">
+              <table class="stage-table">
+                <thead>
+                  <tr><th scope="col">阶段</th><th scope="col">状态</th><th scope="col">退出码</th><th scope="col">计数</th><th scope="col">命令</th></tr>
+                </thead>
+                <tbody id="stage-body"></tbody>
+              </table>
+            </div>
+            <h3 class="sub-title">每个视频的进度</h3>
+            <ol class="event-tail" id="event-tail" data-testid="event-tail"></ol>
+            <p class="muted-note" id="event-empty" hidden>还没有收到单个视频的进度。</p>
+            <h3 class="sub-title">运行日志</h3>
+            <pre class="log-panel" id="log-panel" data-testid="log-panel"></pre>
+            <p class="muted-note" id="log-empty" hidden>这次运行还没有写日志。</p>
+          </div>
+        </details>
+      </section>
+    </div>
+  </section>
+
+  <section class="view view--settings" id="settings-view" data-testid="settings-view" hidden>
+    <header class="page-head">
+      <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>本机设置</p>
+      <h1 class="page-title">设置</h1>
+      <p class="page-lede">准备好视频文件夹和翻译服务，就可以开始生成字幕了。</p>
+    </header>
+
+    <div class="settings-loading" id="settings-loading" aria-hidden="true">
+      <div class="skeleton-card skeleton-card--tall"><span class="skeleton skeleton--title"></span><span class="skeleton skeleton--line"></span><span class="skeleton skeleton--line"></span></div>
+      <div class="skeleton-card skeleton-card--tall"><span class="skeleton skeleton--title"></span><span class="skeleton skeleton--line"></span></div>
+    </div>
+
+    <div class="callout callout--error" id="settings-error" hidden role="alert">
+      <p class="callout-title">设置没有读出来</p>
+      <p class="callout-copy" id="settings-error-copy">本地服务没有返回设置内容。稍后重试，或者回到终端检查服务。</p>
+      <div class="callout-actions">
+        <button class="btn btn--quiet btn--small" type="button" id="settings-retry">重新读取</button>
+      </div>
+      <details class="tech"><summary>技术细节</summary><pre class="tech-pre" id="settings-error-tech"></pre></details>
+    </div>
+
+    <section class="repair" id="settings-repair" hidden aria-labelledby="repair-title">
+      <p class="repair-kicker">需要处理</p>
+      <h2 class="repair-title" id="repair-title">配置文件需要修复</h2>
+      <p class="repair-copy">现在这份 <code class="mono" id="repair-path">subgen.toml</code> 里有读不懂的内容。修复会按下面表单里的值重写文件，文件里无法识别的段落会被丢弃。</p>
+      <details class="tech"><summary>原始错误</summary><pre class="tech-pre" id="repair-error"></pre></details>
+      <div class="repair-actions">
+        <button class="btn btn--primary" type="button" id="repair-action" data-testid="repair-action">修复并保存</button>
+        <span class="repair-note">只有确认要用表单里的值覆盖时才需要这样做。</span>
+      </div>
+    </section>
+
+    <div class="notes" id="settings-warning" data-testid="settings-warning" hidden></div>
+
+    <div class="notice" id="settings-notice" hidden aria-live="polite"></div>
+
+    <form class="settings-form" id="settings-form" data-testid="settings-form" novalidate hidden>
+      <div id="settings-sections"></div>
+    </form>
+
+    <section class="preview-panel" id="preview-panel" hidden aria-labelledby="preview-title">
+      <header class="preview-head">
+        <div>
+          <p class="preview-kicker">即将写入</p>
+          <h2 class="preview-title" id="preview-title">配置文件预览</h2>
+        </div>
+        <button class="text-button" type="button" id="preview-close">收起</button>
+      </header>
+      <p class="preview-note">下面是要写进配置文件的内容。现在还没有保存。</p>
+      <pre class="preview-pre mono" id="preview-pre"></pre>
+      <p class="preview-meta" id="preview-meta"></p>
+    </section>
+
+    <div class="savebar" id="savebar" hidden>
+      <p class="savebar-status" id="settings-status" data-testid="settings-status">保存后生效</p>
+      <div class="savebar-actions">
+        <button class="btn btn--quiet" type="button" id="settings-preview" data-testid="settings-preview">查看将写入的内容</button>
+        <button class="btn btn--primary" type="submit" form="settings-form" id="settings-save" data-testid="settings-save">保存设置</button>
+      </div>
+    </div>
+
+    <details class="tech tech--block" id="settings-tech">
+      <summary>技术细节</summary>
+      <div class="tech-body">
+        <p class="tech-line">配置文件 <code class="mono" id="settings-config-path">—</code></p>
+        <p class="tech-line">配置版本 <code class="mono" id="settings-base-sha">—</code></p>
+        <div id="settings-raw-warnings"></div>
+      </div>
+    </details>
   </section>
 
 </main>
 
-<footer class="app-footer">
-  <span>subgen web · 本地控制台</span>
-  <span class="mono">无外部请求 · 离线可用</span>
+<footer class="footer">
+  <p>subgen 字幕工坊 · 本地运行</p>
+  <p class="footer-quiet">视频和字幕都留在你的电脑上</p>
 </footer>
 
 <div class="toast" id="toast" data-testid="toast" role="status" aria-live="polite" data-visible="false"></div>
 <p class="sr-only" id="sr-status" role="status" aria-live="polite"></p>
 
-<dialog class="dialog" id="external-ack" data-testid="external-ack" aria-labelledby="ack-title">
-  <div class="dialog-head">
-    <span class="dialog-mark" aria-hidden="true">!</span>
-    <div>
-      <h2 id="ack-title">检测到外部运行</h2>
-      <p class="dialog-sub mono" id="ack-code">external_activity</p>
+<dialog class="dialog dialog--create" id="create-modal" data-testid="create-modal" aria-labelledby="create-title">
+  <form class="create-form" id="create-form" data-testid="create-form" novalidate>
+    <header class="dialog-head">
+      <p class="dialog-kicker">新建任务</p>
+      <h2 class="dialog-title" id="create-title">这次处理哪些视频？</h2>
+      <p class="dialog-lede">从同一个视频文件夹里挑一部分，先做一次任务。</p>
+    </header>
+
+    <div class="dialog-body">
+      <div class="choice-stack" role="radiogroup" aria-label="处理范围">
+        <label class="choice" data-choice="all">
+          <input class="choice-input" type="radio" name="scope" value="all" data-testid="create-scope-all" checked>
+          <span class="choice-body">
+            <span class="choice-title">全部视频</span>
+            <span class="choice-desc">按文件夹里的顺序处理，已经生成过字幕的视频会自动跳过。</span>
+          </span>
+          <span class="choice-mark" aria-hidden="true"></span>
+        </label>
+
+        <label class="choice" data-choice="limit">
+          <input class="choice-input" type="radio" name="scope" value="limit" data-testid="create-scope-limit">
+          <span class="choice-body">
+            <span class="choice-title">先试一部分</span>
+            <span class="choice-desc">从第一个开始，看看效果再决定要不要全部处理。</span>
+            <span class="choice-limit">
+              <input class="input input--number" type="number" id="create-limit" data-testid="create-limit" name="limit" min="1" max="999" step="1" value="5" inputmode="numeric" aria-label="要处理的视频数量">
+              <span>个视频</span>
+            </span>
+          </span>
+          <span class="choice-mark" aria-hidden="true"></span>
+        </label>
+      </div>
+
+      <p class="create-explain">开始后会依次检查视频、识别语音、翻译和校对、写入字幕，可以随时取消。</p>
+
+      <div class="notice notice--warm" id="create-notice" hidden>
+        <div id="create-notice-text"></div>
+        <a class="text-link" href="#/settings" id="create-notice-link">去设置<span aria-hidden="true"> →</span></a>
+      </div>
+
+      <div class="notice notice--warm" id="create-busy-notice" hidden>
+        <p>已经有一个任务在运行。等它结束再开始新的，或者<button class="text-link text-link--button" type="button" id="create-busy-link">查看运行中的任务</button>。</p>
+      </div>
+
+      <div class="create-error" id="create-error" data-testid="create-error" hidden aria-live="polite"></div>
+
+      <details class="advanced" id="create-advanced" data-testid="create-advanced">
+        <summary>更多选项</summary>
+        <div class="advanced-body">
+          <label class="checkline" for="create-dry-run">
+            <input class="checkbox" type="checkbox" id="create-dry-run" data-testid="create-dry-run" name="dry_run">
+            <span class="checkline-copy">
+              <span class="checkline-title">只预览命令，不处理视频</span>
+              <span class="checkline-desc">试运行。不会运行模型，也不会写入字幕。</span>
+            </span>
+          </label>
+          <label class="checkline" for="create-skip-inventory">
+            <input class="checkbox" type="checkbox" id="create-skip-inventory" name="skip_inventory">
+            <span class="checkline-copy">
+              <span class="checkline-title">跳过视频检查</span>
+              <span class="checkline-desc">直接使用上一次整理好的视频清单。</span>
+            </span>
+          </label>
+          <label class="checkline" for="create-skip-extract">
+            <input class="checkbox" type="checkbox" id="create-skip-extract" name="skip_extract">
+            <span class="checkline-copy">
+              <span class="checkline-title">跳过音频提取</span>
+              <span class="checkline-desc">复用上一次已经提取好的音频文件。</span>
+            </span>
+          </label>
+          <div class="field mini-field-wide">
+            <label class="field-label" for="create-video-ids">指定视频编号（可选）</label>
+            <textarea class="input input--area" id="create-video-ids" data-testid="create-video-ids" name="video_ids" rows="2" spellcheck="false" placeholder="每行一个 64 位编号，留空表示按上面的范围处理"></textarea>
+            <p class="field-help">只处理列出的视频。编号是 64 位十六进制字符串，不填就按上面的范围处理。</p>
+          </div>
+          <div class="mini-fields">
+            <p class="mini-fields-label">批量大小</p>
+            <div class="mini-field">
+              <label class="field-label" for="create-asr-batch">识别</label>
+              <input class="input input--number" type="number" id="create-asr-batch" name="asr_batch_size" min="1" max="512" step="1" value="32" inputmode="numeric">
+            </div>
+            <div class="mini-field">
+              <label class="field-label" for="create-align-batch">对齐</label>
+              <input class="input input--number" type="number" id="create-align-batch" name="alignment_batch_size" min="1" max="512" step="1" value="16" inputmode="numeric">
+            </div>
+            <p class="mini-fields-note">不确定就保持默认，数字越大占用内存越多。</p>
+          </div>
+        </div>
+      </details>
     </div>
-  </div>
-  <div class="dialog-body" id="ack-body"></div>
-  <div class="dialog-actions">
-    <button class="btn" type="button" value="cancel" id="ack-cancel">返回</button>
-    <button class="btn btn--primary" type="button" value="ack" id="ack-confirm">确认并创建</button>
-  </div>
+
+    <footer class="dialog-foot">
+      <button class="btn btn--quiet" type="button" id="create-cancel" data-testid="create-cancel">取消</button>
+      <button class="btn btn--primary" type="submit" id="create-submit" data-testid="create-submit">开始</button>
+    </footer>
+  </form>
 </dialog>
 
-<dialog class="dialog" id="confirm-dialog" aria-labelledby="confirm-title">
-  <div class="dialog-head">
-    <span class="dialog-mark dialog-mark--quiet" aria-hidden="true">?</span>
-    <div>
-      <h2 id="confirm-title">确认</h2>
-      <p class="dialog-sub mono" id="confirm-code"></p>
+<dialog class="dialog dialog--browse" id="browse-modal" data-testid="browse-modal" aria-labelledby="browse-title">
+  <header class="dialog-head">
+    <p class="dialog-kicker">视频文件夹</p>
+    <h2 class="dialog-title" id="browse-title">选择文件夹</h2>
+    <p class="dialog-lede">只显示文件夹，不会读取或修改里面的文件。</p>
+  </header>
+  <div class="browse-bar">
+    <button class="btn btn--quiet btn--small" type="button" id="browse-up" data-testid="browse-up" disabled>上一级</button>
+    <p class="browse-path mono" id="browse-path" data-testid="browse-path">—</p>
+  </div>
+  <div class="browse-body">
+    <div class="browse-loading" id="browse-loading" hidden aria-hidden="true">
+      <span class="skeleton skeleton--line"></span>
+      <span class="skeleton skeleton--line"></span>
+      <span class="skeleton skeleton--line"></span>
     </div>
+    <p class="browse-error" id="browse-error" hidden></p>
+    <ul class="browse-list" id="browse-list"></ul>
+    <p class="browse-empty" id="browse-empty" hidden>这个文件夹里没有子文件夹。可以在这里选择，或者返回上一级。</p>
+    <p class="browse-truncated" id="browse-truncated" hidden>文件夹太多，只显示前 200 个。</p>
   </div>
-  <div class="dialog-body" id="confirm-body"></div>
-  <div class="dialog-actions">
-    <button class="btn" type="button" id="confirm-cancel">返回</button>
-    <button class="btn btn--danger" type="button" id="confirm-ok">确认</button>
+  <footer class="dialog-foot">
+    <button class="btn btn--quiet" type="button" id="browse-cancel">取消</button>
+    <button class="btn btn--primary" type="button" id="browse-select" data-testid="browse-select" disabled>选择这个文件夹</button>
+  </footer>
+</dialog>
+
+<dialog class="dialog dialog--help" id="help-modal" data-testid="help-modal" aria-labelledby="help-title">
+  <header class="dialog-head">
+    <p class="dialog-kicker">三步</p>
+    <h2 class="dialog-title" id="help-title">第一次用，按这个顺序来</h2>
+    <p class="dialog-lede">不用命令行，也不用读文档。</p>
+  </header>
+  <div class="dialog-body">
+    <ol class="help-steps">
+      <li>
+        <span class="help-num" aria-hidden="true">01</span>
+        <div>
+          <h3 class="help-step-title">选一个视频文件夹</h3>
+          <p class="help-step-copy">在「设置」里点「浏览…」选好文件夹，再点「保存设置」。</p>
+        </div>
+      </li>
+      <li>
+        <span class="help-num" aria-hidden="true">02</span>
+        <div>
+          <h3 class="help-step-title">开始一次任务</h3>
+          <p class="help-step-copy">回到「任务」，点「开始生成字幕」。第一次可以选「先试一部分」。</p>
+        </div>
+      </li>
+      <li>
+        <span class="help-num" aria-hidden="true">03</span>
+        <div>
+          <h3 class="help-step-title">取走字幕</h3>
+          <p class="help-step-copy">任务完成后，每个视频旁边会多出一个同名字幕文件，文件名是视频名加 .zh.srt。</p>
+        </div>
+      </li>
+    </ol>
+    <p class="help-note">不确定的时候，可以在「更多选项」里勾选「只预览命令，不处理视频」，先看看会执行什么。</p>
   </div>
+  <footer class="dialog-foot">
+    <a class="btn btn--quiet" href="#/settings" id="help-settings-link">去设置</a>
+    <button class="btn btn--primary" type="button" id="help-close">知道了</button>
+  </footer>
+</dialog>
+
+<dialog class="dialog dialog--confirm" id="confirm-dialog" data-testid="confirm-dialog" aria-labelledby="confirm-title">
+  <header class="dialog-head">
+    <p class="dialog-kicker" id="confirm-kicker">确认</p>
+    <h2 class="dialog-title" id="confirm-title">确认</h2>
+    <p class="dialog-lede" id="confirm-body">确定要继续吗？</p>
+  </header>
+  <footer class="dialog-foot">
+    <button class="btn btn--quiet" type="button" id="confirm-cancel">返回</button>
+    <button class="btn btn--primary" type="button" id="confirm-ok">确认</button>
+  </footer>
+</dialog>
+
+<dialog class="dialog dialog--confirm" id="external-ack" data-testid="external-ack" aria-labelledby="ack-title">
+  <header class="dialog-head">
+    <p class="dialog-kicker">检测到外部运行</p>
+    <h2 class="dialog-title" id="ack-title">这个工作目录刚被别的程序用过</h2>
+    <p class="dialog-lede">进度文件里出现了不是这个页面写入的记录。确认那些运行已经结束，再继续创建任务。</p>
+  </header>
+  <div class="dialog-body">
+    <p class="ack-detail mono" id="ack-detail"></p>
+  </div>
+  <footer class="dialog-foot">
+    <button class="btn btn--quiet" type="button" id="ack-cancel">返回</button>
+    <button class="btn btn--primary" type="button" id="ack-confirm">确认并创建</button>
+  </footer>
 </dialog>
 
 <noscript>
-  <div class="noscript">这个控制台需要 JavaScript。请启用后重新加载页面。</div>
+  <p class="noscript">这个页面需要 JavaScript。启用后重新加载。</p>
 </noscript>
 
 <script src="/static/app.js" defer></script>
