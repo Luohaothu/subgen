@@ -95,6 +95,10 @@ mutual-exclusion rule above to an interactive scheduler. A second console exits
 2. A job runs one stage at a time and cancellation sends SIGINT, SIGTERM, then
 SIGKILL to the stage process group.
 
+The console also serves two read-only helpers for first-run setup: a readiness
+summary in `/api/meta` (folder, translation provider, model directories) and a
+directory-only browser at `/api/browse`. Neither writes state.
+
 ## Publication
 
 `publish.py` checks the target, copies the validated candidate to

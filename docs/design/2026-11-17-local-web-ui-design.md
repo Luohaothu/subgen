@@ -1,6 +1,6 @@
 # Local web UI design
 
-Status: accepted on 2026-11-17.
+Status: accepted on 2026-11-17. Revised on 2026-11-21 after first-use feedback.
 
 ## Why
 
@@ -404,7 +404,8 @@ The body limit is 64 KiB.
 | --- | --- | --- |
 | GET | `/` | `index.html` |
 | GET | `/static/<name>` | `app.js` or `app.css` only |
-| GET | `/api/meta` | server, work root, inventory, active job, external activity |
+| GET | `/api/meta` | server, work root, setup checklist, quick places, inventory, active job, external activity |
+| GET | `/api/browse?path=` | read-only folder browser, directories only |
 | GET | `/api/jobs` | job summaries, newest first |
 | POST | `/api/jobs` | create `{params, client_token?, acknowledge_external?}` |
 | GET | `/api/jobs/<id>` | full record with stages and stored events |
@@ -493,24 +494,40 @@ binding.
 
 ### UI
 
-Three views in one page, hash routed:
+The interface is written for a first-time user. It uses `任务` for a job,
+`视频文件夹` for the source root, and `识别语音`/`对齐时间`/`翻译和校对`/
+`写入字幕` for the work. Pipeline stage names appear only in the technical
+fold.
 
-- `#/jobs`: create panel and job list. The panel holds the run scope fields and
-  a dry-run toggle. It is disabled with a link to the active job while a job
-  runs. The list shows state, scope, current stage, progress, and actions
-  (open, cancel, rerun, delete).
-- `#/jobs/<id>`: stage timeline, live counters, per-video event tail, and a
-  following log panel. Actions are cancel, rerun, and delete. Failures show the
-  stage, exit code, and the log tail without hiding the rest.
-- `#/settings`: grouped fields with the file value, the effective value, and a
-  source badge. Environment-shadowed rows say which variable wins. Save is
-  disabled while validation fails. A preview panel shows the exact TOML that
-  will be written. A repair action appears when the current file cannot be
-  loaded.
+Three hash-routed views:
 
-The page polls `/api/meta` every 5 seconds. While a job runs it polls the detail
-endpoint every second and stops when the tab is hidden. Every status, error, and
-empty state has Chinese copy. The UI uses no external assets and no build step.
+- `#/jobs`: a hero that says `把视频变成中文字幕`, a primary action, and a
+  three-item readiness checklist for the video folder, the translation service,
+  and the model files. When jobs exist, the hero becomes a `最近的任务` header,
+  a setup notice, and a card list with view, cancel, rerun, and delete actions.
+- `#/jobs/<id>`: four plain phases (准备, 识别, 翻译, 完成) mapped from the seven
+  stages, one progress sentence, the current video, and a failure card that
+  turns a known cause into a Chinese hint with a link to the matching settings.
+  The seven stages, argv, per-video tail, and log live under `处理细节`.
+- `#/settings`: three sections (video folder, translation service, models and
+  runtime), a read-only folder browser, quick places, validation with Chinese
+  messages, a TOML preview, a comment-preserving save, and a repair path for a
+  file that does not load.
+
+The create dialog asks one question (`全部视频` or `先试一部分`) and hides the
+dry run, skip flags, video filter, and batch sizes under `更多选项`. A help
+dialog explains the three first steps. The page polls `/api/meta` every 5
+seconds and the active detail every second, and stops while the tab is hidden.
+The UI uses no external asset and no build step.
+
+The first version was a dark ops console with the seven stage names, the
+manifest terms, and every batch setting on the first screen. It failed the
+first-use test: the user could not tell what to do and called it ugly. The
+revision replaced it with a warm, light editorial interface, a readiness
+checklist, plain-language phases, and progressive disclosure. The request path,
+job state machine, storage, and progress attribution did not change. The new
+read-only `/api/browse` endpoint and the `setup` and `places` fields on
+`/api/meta` exist only to support the checklist and the folder picker.
 
 ## Synthesis decision
 
@@ -560,7 +577,9 @@ the author's.
   pruning keeps runtime memory bounded; disk growth is bounded by the stage
   output and the 200-record prune.
 - The Chinese UI copy is a product surface; code identifiers and docs stay
-  English.
+  English. The UI says `任务` while the code, API, and docs say job.
+- The main detail view collapses seven stages into four phases. The exact stages
+  are one disclosure away, not gone.
 
 ## Alternatives considered
 
@@ -609,11 +628,13 @@ uv run subgen web --dry-run
 uv run subgen web --port 8765 --open
 ```
 
-The browser pass creates a dry-run job, opens it, sees seven skipped stages and
-the exact argv, edits one settings field, saves it, diffs the file to confirm the
-comment survived, creates a real job against a wrong source root, and sees the
-inventory stage fail with the pipeline's own message. Screenshots and the
-Playwright script are kept as artifacts.
+The browser pass opens the empty state and its readiness checklist, creates a
+dry-run job, checks the four phases and the seven stages under `处理细节`,
+browses folders, edits and saves one settings field while confirming the comment
+survives, creates a real job against a temporary source root, checks the
+human-readable failure hint and the technical log, deletes the job, opens the
+help dialog, and checks the offline state. Screenshots and the Playwright script
+are kept outside the repository as review artifacts.
 
 Packaging: `uv build && unzip -l dist/subgen-*.whl | grep 'web/static'` lists
 `index.html`, `app.js`, and `app.css`.

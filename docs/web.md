@@ -1,8 +1,12 @@
 # Web console
 
-`subgen web` serves a local console for starting runs, watching progress,
-managing jobs, and editing the pipeline settings. It binds `127.0.0.1` only and
-has no authentication. Do not expose the port.
+`subgen web` serves a local console for starting jobs, watching progress,
+managing finished jobs, and editing the pipeline settings. It binds `127.0.0.1`
+only and has no authentication. Do not expose the port.
+
+The console is aimed at someone who does not run the pipeline from a terminal.
+It explains the product on the first screen, checks the three things a real run
+needs, and keeps the pipeline terms behind a details fold.
 
 ## Start the console
 
@@ -21,48 +25,76 @@ a browser, or pass `--open` to open it after the listener is ready.
 | `--dry-run` | Print the resolved config path, work root, jobs root, and listen address, then exit. |
 | `--verbose` | Log one line per request to stderr. |
 
-The console needs a usable work root. If the settings file does not load, the
-console still starts so you can repair it on the settings page. It finds the
-work root from `paths.work_root` in the file, then `SUBGEN_WORK_ROOT`, then the
-default. Job creation stays disabled until the settings load.
+The console needs a usable work root. A missing settings file loads the defaults,
+so the first save can create the file. If an existing file does not load, the
+console still starts so the settings page can repair it. It finds the work root
+from `paths.work_root` in the file, then `SUBGEN_WORK_ROOT`, then the default.
+Job creation stays disabled until the settings load.
 
 One console owns one work root. A lock file at
 `<work_root>/state/web/server.lock` keeps a second console out; the second exits
 with status 2.
 
+## Ready check
+
+The first screen has a three-item checklist:
+
+1. **Video folder.** The folder subgen scans, including its subfolders. It must
+   exist and be a canonical absolute path. The settings page has a `浏览…`
+   browser and quick picks for the home, Movies, Downloads, Desktop, Videos,
+   and Documents folders.
+2. **Translation service.** An OpenAI-compatible endpoint, a model name, and a
+   revision. The API key is read from the environment variable named in the
+   settings, not stored in the file.
+3. **Model files.** Only real runs need them. A dry run skips every model. The
+   checklist shows a warning when the directory is missing and lets you start a
+   dry run anyway.
+
+The console also reads the folder browser from a read-only local API. It lists
+directories only, skips hidden names, and caps a listing at 200 entries.
+
 ## Create a job
 
-The create panel sets the run scope:
+The primary button opens one dialog.
 
-- Limit: process the first N videos. Leave it empty for the whole manifest.
-- Video IDs: one 64-character lowercase hex ID per line or comma-separated.
-- Skip inventory and skip extract: reuse the current manifest and audio.
-- ASR batch size and alignment batch size: passed to the stage commands.
-- Dry run: build and record the seven commands without starting a stage.
+- `全部视频` processes the folder in manifest order. Videos that already have a
+  subtitle are skipped.
+- `先试一部分` processes the first N videos. The default is 5.
+- `更多选项` holds the dry run, the skip flags, a video ID filter, and the ASR
+  and alignment batch sizes. Most users never open it.
 
-The console runs one job at a time. While a job runs, the create panel shows the
+A dry-run job builds and records the seven stage commands without starting a
+stage. It ends as `dry_run`, every stage is `skipped`, and the detail page shows
+the exact command for each stage. Use it to check the settings without a corpus
+or model checkpoints.
+
+The console runs one job at a time. While a job runs, the create dialog shows the
 active job and refuses a second one. If another process wrote progress rows in
 the last 120 seconds, the console asks you to acknowledge the overlap before it
 starts.
 
-A dry-run job ends as `dry_run`. Every stage is `skipped`, and the detail page
-shows the exact command for each stage. Use it to check the settings without a
-corpus or model checkpoints.
-
 ## Watch progress
 
-A job detail page shows three views of the same attempt:
+The detail page shows four plain phases in the main view:
 
-- The seven-stage rail with the status, exit code, and counters for each stage.
-- The live counters for the running stage, marked approximate while the stage
-  runs.
-- The newest per-video rows from `state/runtime_progress.jsonl`, and a log
-  panel that follows the stage output.
+| Phase | Pipeline stages |
+| --- | --- |
+| 准备 | Inventory and audio extraction |
+| 识别 | ASR and forced alignment |
+| 翻译 | Primary translation and review |
+| 完成 | Publication |
 
-Counters come from the stage's own terminal progress row. The console reads only
-the byte range of the progress log that belongs to the attempt. It does not read
+The page also shows the current video, the finished and total counts, elapsed
+time, and a bar for the active phase. Counters come from the stage's own
+terminal progress row. The console reads only the byte range of
+`state/runtime_progress.jsonl` that belongs to the attempt. It does not read
 `state/*_summary.json`, because those files are last-writer-wins with no attempt
 identity.
+
+The `处理细节` fold holds the seven real stages, their exit codes, counters, and
+exact argv, plus the per-video event tail and a following log panel. The failure
+card names the phase and turns a known cause into a Chinese hint, with a link to
+the matching settings. The raw log stays under `查看技术日志`.
 
 The page polls once a second while a job runs and once every five seconds when
 idle. It stops polling while the tab is hidden.
@@ -80,33 +112,41 @@ A job record lives at `<work_root>/state/web/jobs/<job_id>.json`, and its log at
 records and deletes the oldest finished records beyond that.
 
 Terminal states are final. A rerun creates a new record and points at the
-original with `origin_job_id`.
+original with `origin_job_id`. The UI shows the record's title as the local
+creation time and puts the raw job id behind a copy button.
 
 ## Edit settings
 
-The settings page shows one row per key in `subgen.toml`:
+The settings page is a single column with three sections.
 
-- The value in the file.
-- The effective value after environment overrides.
-- A badge for the source: `file`, `env`, `derived`, or `default`.
+1. **Video folder.** The path, a folder browser, quick picks, and
+   `检查文件夹`. The check runs the same validation as a save.
+2. **Translation service.** The endpoint, model, revision, and the name of the
+   environment variable that holds the API key. The page never reads the key
+   value. It says whether the variable is set.
+3. **Models and runtime.** Collapsed by default. Holds `model_root`,
+   `asr_model`, the device, and the ASR engine. Real runs need the model
+   directories; a dry run does not.
 
 The page validates every draft with the same loader the pipeline uses. It also
 requires `source_root` and `work_root` to exist and to be canonical absolute
 paths, which is the rule the first stage enforces. Missing model directories are
-warnings, because a remote translation provider makes the local checkpoints
-optional.
+warnings.
 
 A save rewrites only the changed lines, so comments and ordering survive. The
 console proves the rewrite by parsing it back with `tomllib`; a file it cannot
 reproduce is refused with an instruction to use the canonical write. The previous
-bytes are copied to `subgen.toml.bak` before the replace.
+bytes are copied to `subgen.toml.bak` before the replace. The preview shows the
+exact text that will be written.
 
 If the file does not load, use the repair action. It writes a canonical file
 with the values in the form and keeps the backup. That drops unknown sections,
 so check the diff first.
 
 A save that changes `work_root` or `source_root` needs a console restart. The
-next job creation returns an error until you restart.
+next job creation returns an error until you restart. Environment overrides are
+shown under the field, and the saved file value is what a process without that
+variable would read.
 
 ## Recovery
 
@@ -130,6 +170,8 @@ next job creation returns an error until you restart.
   match the console's own origin.
 - Job creation accepts structured fields only. No command string crosses the
   API.
+- The folder browser is read-only. It lists directories, never file contents,
+  and follows the same loopback and origin guards.
 - The page loads no external font, script, image, or stylesheet.
 
 ## Tests

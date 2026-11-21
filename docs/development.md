@@ -68,8 +68,9 @@ file, so it needs no database and no network.
 | `test_runtime_cli.py` | Inventory and extraction CLI |
 | `test_corpus_*_cli.py` | Corpus stage drivers and migration commands |
 
-The latest full run on macOS (Python 3.13) reported 417 passed and 2 skipped. The two skips are the production-root path check and the
-real torch batch test, which needs the `models` extra.
+The latest full run on macOS (Python 3.13) reported 432 passed and 2 skipped.
+The two skips are the production-root path check and the real torch batch test,
+which needs the `models` extra.
 
 ### Platform notes
 

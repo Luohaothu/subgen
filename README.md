@@ -132,8 +132,9 @@ and publication. It accepts `--limit`, `--video-id`, `--skip-inventory`, and
 
 ## Web console
 
-`subgen web` serves a local console for job creation, progress, job management,
-and settings.
+`subgen web` serves a guided local console for job creation, progress, job
+management, and settings. A first-run checklist covers the video folder, the
+translation service, and the model files.
 
 ```bash
 uv run subgen web --open
