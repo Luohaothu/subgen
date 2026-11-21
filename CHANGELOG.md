@@ -14,6 +14,9 @@ All notable changes to this project are recorded here. The format follows
 - Device and engine selection for ASR, alignment, and translation.
 - One `subgen` command for the full pipeline, plus `subgen serve` for vLLM on
   CUDA or MLX on Apple Silicon.
+- `subgen web`, a guided local console with a readiness checklist, job
+  creation, live progress, job management, a folder browser, and a validated
+  settings editor.
 - Any OpenAI-compatible translation model, with an optional separate reviewer.
 - Chinese README.
 - MIT license.

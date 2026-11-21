@@ -75,6 +75,30 @@ needs no file lock.
 The `subgen` entry point passes the resolved settings to the child stage
 commands. The stage commands read the same manifest and work root.
 
+## Web console
+
+`subgen web` is a scheduler in front of the stage commands. It builds the same
+commands with `runner_cli.build_commands`, runs one stage at a time, and records
+the attempt as `<work_root>/state/web/jobs/<job_id>.json`. Because it owns each
+spawn, the current stage, the per-stage exit code, and the cancel target are
+facts rather than log inferences.
+
+The console reads per-video progress from the byte window of
+`state/runtime_progress.jsonl` that belongs to the attempt: the runner records
+the log size before spawn and after exit. The terminal row in that window holds
+the stage counters. The console does not read `state/*_summary.json`, because
+those files are last-writer-wins with no attempt identity. It never writes
+pipeline state.
+
+One console owns one work root through `state/web/server.lock`. That moves the
+mutual-exclusion rule above to an interactive scheduler. A second console exits
+2. A job runs one stage at a time and cancellation sends SIGINT, SIGTERM, then
+SIGKILL to the stage process group.
+
+The console also serves two read-only helpers for first-run setup: a readiness
+summary in `/api/meta` (folder, translation provider, model directories) and a
+directory-only browser at `/api/browse`. Neither writes state.
+
 ## Publication
 
 `publish.py` checks the target, copies the validated candidate to
@@ -126,6 +150,11 @@ from the device. MLX serves translation only.
 | `platform_io.py` | Descriptor paths for libavformat |
 | `runner_cli.py` | Portable corpus runner |
 | `serve_cli.py` | vLLM, MLX, or external endpoint selection |
+| `web/jobs.py` | Job records, state machine, store, work-root lock |
+| `web/runner.py` | Stage plan, subprocess supervision, cancellation |
+| `web/progress.py` | Progress-log vocabulary and byte-window attribution |
+| `web/settings_io.py` | Settings view, validation, line-preserving save |
+| `web/app.py`, `web/server.py` | HTTP routes, guards, and the socket adapter |
 
 ## Known gaps
 

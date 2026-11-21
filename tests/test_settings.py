@@ -5,11 +5,15 @@ import unittest
 from pathlib import Path
 
 from subtitle_pipeline.settings import (
+    _SECTIONS,
     DEFAULT_API_KEY_ENV,
     DEFAULT_DEVICE,
+    SETTINGS_ENV,
+    SETTINGS_SECTIONS,
     SettingsError,
     TranslationProvider,
     load_settings,
+    resolve_config_path,
     resolve_device,
 )
 
@@ -120,6 +124,55 @@ class SettingsTests(unittest.TestCase):
             load_settings(environ={"SUBGEN_DEVICE": "tpu"})
         with self.assertRaises(SettingsError):
             load_settings(environ={"SUBGEN_SOURCE_ROOT": "relative/videos"})
+
+    def test_public_settings_tables_cover_the_loader(self):
+        expected = {
+            "paths": {"source_root", "work_root", "model_root", "asr_model"},
+            "runtime": {"device", "asr_engine"},
+            "translation": {
+                "endpoint",
+                "model",
+                "revision",
+                "api_key_env",
+                "review_model",
+                "review_revision",
+            },
+        }
+        self.assertEqual(
+            {section: set(keys) for section, keys in SETTINGS_SECTIONS.items()},
+            expected,
+        )
+        self.assertEqual(
+            _SECTIONS,
+            {section: set(keys) for section, keys in expected.items()},
+        )
+        self.assertEqual(
+            set(SETTINGS_ENV),
+            {f"{section}.{key}" for section, keys in expected.items() for key in keys},
+        )
+        self.assertEqual(SETTINGS_ENV["paths.source_root"], "SUBGEN_SOURCE_ROOT")
+        self.assertEqual(
+            SETTINGS_ENV["translation.review_revision"],
+            "SUBGEN_TRANSLATION_REVIEW_REVISION",
+        )
+
+    def test_resolve_config_path_prefers_the_explicit_file(self):
+        explicit = Path("/srv/explicit.toml")
+        self.assertEqual(resolve_config_path({}, explicit), explicit)
+        configured = Path("/srv/from-env.toml")
+        self.assertEqual(
+            resolve_config_path({"SUBGEN_CONFIG": str(configured)}, None),
+            configured,
+        )
+
+    def test_missing_explicit_path_loads_defaults_only_when_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.toml"
+            with self.assertRaises(SettingsError):
+                load_settings(environ={}, config_path=missing)
+            settings = load_settings(environ={}, config_path=missing, missing_ok=True)
+            self.assertEqual(settings.source_root, Path("/home/leo/nas/Other/abc"))
+            self.assertIsNone(settings.translation)
 
     def test_resolve_device_honors_explicit_choices_and_auto(self):
         self.assertEqual(resolve_device("cpu"), "cpu")

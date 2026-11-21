@@ -107,6 +107,19 @@ subgen
 | --- | --- |
 | `subgen` | 运行完整语料流水线 |
 | `subgen serve` | 启动 vLLM 或 MLX 翻译服务，或打印指引 |
+| `subgen web` | 启动本地作业与参数控制台 |
+
+## Web 控制台
+
+`subgen web` 提供带引导的本地控制台，用于创建作业、查看进度、管理作业和修改参数设置。
+首次使用会检查视频文件夹、翻译服务和模型文件。
+
+```bash
+uv run subgen web --open
+```
+
+它只监听 `127.0.0.1`，同一时间只运行一个作业，并使用流水线自身的校验逻辑读写
+`subgen.toml`。详见 [Web 控制台](docs/web.md)（英文）。
 
 ## 运行矩阵
 
@@ -147,7 +160,9 @@ uv run pre-commit install            # 可选，安装 git hook
 - `docs/architecture.md` 介绍阶段流程、语料假设、状态和运行矩阵。
 - `docs/development.md` 介绍环境、测试、lint、版本和 CI。
 - `docs/operations.md` 介绍部署、监控、恢复和清理。
+- `docs/web.md` 介绍 Web 控制台：作业、进度、参数设置和恢复。
 - `docs/design/2026-11-13-portable-runtime-design.md` 记录平台、引擎、媒体后端和 provider 的取舍。
+- `docs/design/2026-11-17-local-web-ui-design.md` 记录 Web 控制台的设计取舍。
 
 ## 许可证
 

@@ -128,6 +128,20 @@ and publication. It accepts `--limit`, `--video-id`, `--skip-inventory`, and
 | --- | --- |
 | `subgen` | Run the full corpus pipeline |
 | `subgen serve` | Start the vLLM or MLX translation server, or print guidance |
+| `subgen web` | Serve the local job and settings console |
+
+## Web console
+
+`subgen web` serves a guided local console for job creation, progress, job
+management, and settings. A first-run checklist covers the video folder, the
+translation service, and the model files.
+
+```bash
+uv run subgen web --open
+```
+
+It binds `127.0.0.1` only, runs one job at a time, and edits `subgen.toml` with
+the same validation the pipeline uses. See [Web console](docs/web.md).
 
 ## Runtime matrix
 
@@ -170,8 +184,10 @@ Run `uv lock` after changing dependencies, and commit `uv.lock` with the change.
   the runtime matrix.
 - `docs/development.md` covers setup, tests, lint, versioning, and CI.
 - `docs/operations.md` covers deployment, monitoring, recovery, and cleanup.
+- `docs/web.md` covers the web console: jobs, progress, settings, and recovery.
 - `docs/design/2026-11-13-portable-runtime-design.md` records the platform,
   engine, media backend, and provider decisions.
+- `docs/design/2026-11-17-local-web-ui-design.md` records the console design.
 
 ## License
 

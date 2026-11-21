@@ -25,18 +25,37 @@ CONFIG_NAME = "subgen.toml"
 DEVICES = frozenset({"auto", "cpu", "cuda", "mps"})
 ASR_ENGINES = frozenset({"auto", "vllm", "funasr"})
 
-_SECTIONS = {
-    "paths": {"source_root", "work_root", "model_root", "asr_model"},
-    "runtime": {"device", "asr_engine"},
-    "translation": {
-        "endpoint",
-        "model",
-        "revision",
-        "api_key_env",
-        "review_model",
-        "review_revision",
-    },
+SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
+    "paths": frozenset({"source_root", "work_root", "model_root", "asr_model"}),
+    "runtime": frozenset({"device", "asr_engine"}),
+    "translation": frozenset(
+        {
+            "endpoint",
+            "model",
+            "revision",
+            "api_key_env",
+            "review_model",
+            "review_revision",
+        }
+    ),
 }
+
+SETTINGS_ENV: dict[str, str] = {
+    "paths.source_root": "SUBGEN_SOURCE_ROOT",
+    "paths.work_root": "SUBGEN_WORK_ROOT",
+    "paths.model_root": "SUBGEN_MODEL_ROOT",
+    "paths.asr_model": "SUBGEN_ASR_MODEL",
+    "runtime.device": "SUBGEN_DEVICE",
+    "runtime.asr_engine": "SUBGEN_ASR_ENGINE",
+    "translation.endpoint": "SUBGEN_TRANSLATION_ENDPOINT",
+    "translation.model": "SUBGEN_TRANSLATION_MODEL",
+    "translation.revision": "SUBGEN_TRANSLATION_REVISION",
+    "translation.api_key_env": "SUBGEN_API_KEY_ENV",
+    "translation.review_model": "SUBGEN_TRANSLATION_REVIEW_MODEL",
+    "translation.review_revision": "SUBGEN_TRANSLATION_REVIEW_REVISION",
+}
+
+_SECTIONS = {section: set(keys) for section, keys in SETTINGS_SECTIONS.items()}
 
 
 class SettingsError(ValueError):
@@ -133,7 +152,10 @@ def _read_toml(path: Path) -> dict[str, object]:
     return value
 
 
-def _config_path(environ: Mapping[str, str], config_path: Path | None) -> Path | None:
+def resolve_config_path(
+    environ: Mapping[str, str], config_path: Path | None
+) -> Path | None:
+    """Resolve the settings file: explicit path, environment, then the CWD."""
     if config_path is not None:
         return config_path
     configured = environ.get(CONFIG_ENV)
@@ -175,11 +197,21 @@ def _optional_text(
 def load_settings(
     environ: Mapping[str, str] | None = None,
     config_path: Path | None = None,
+    *,
+    missing_ok: bool = False,
 ) -> RuntimeSettings:
-    """Load settings with environment values taking precedence over the file."""
+    """Load settings with environment values taking precedence over the file.
+
+    ``missing_ok`` treats an explicit path that does not exist as an empty
+    document. The web console uses it so a first run can start with defaults and
+    create the file on the first save.
+    """
     values = os.environ if environ is None else environ
-    path = _config_path(values, config_path)
-    document = _read_toml(path) if path is not None else {}
+    path = resolve_config_path(values, config_path)
+    if missing_ok and path is not None and not path.is_file():
+        document: dict[str, object] = {}
+    else:
+        document = _read_toml(path) if path is not None else {}
     paths = document.get("paths", {})
     runtime = document.get("runtime", {})
     translation = document.get("translation", {})

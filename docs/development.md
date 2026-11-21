@@ -56,15 +56,21 @@ file, so it needs no database and no network.
 | `test_cli.py` | Single entry point dispatch |
 | `test_runner_cli.py` | Portable pipeline command and filters |
 | `test_serve_cli.py` | vLLM and MLX server selection |
+| `test_web_jobs.py` | Job invariants, store, lock, reconciliation |
+| `test_web_progress.py` | Progress windows, aliases, counters |
+| `test_web_runner.py` | Stage plan, spawn loop, cancellation |
+| `test_web_settings.py` | Settings view, validation, comment-preserving save |
+| `test_web_app.py` | Routes, guards, payloads, static files |
+| `test_web_server.py` | Loopback HTTP adapter and a real child cancel |
 | `test_translation.py` | Translation policy and Chinese output checks |
 | `test_translation_runtime_cli.py` | Two-pass translation runtime and checkpoints |
 | `test_srt_publish.py` | SRT parse and render, candidate validation, pre-check publication |
 | `test_runtime_cli.py` | Inventory and extraction CLI |
 | `test_corpus_*_cli.py` | Corpus stage drivers and migration commands |
 
-The latest full run on Linux (Debian 12, Python 3.11) and macOS reported 278
-passed and 2 skipped. The two skips are the production-root path check and the
-real torch batch test, which needs the `models` extra.
+The latest full run on macOS (Python 3.13) reported 432 passed and 2 skipped.
+The two skips are the production-root path check and the real torch batch test,
+which needs the `models` extra.
 
 ### Platform notes
 
