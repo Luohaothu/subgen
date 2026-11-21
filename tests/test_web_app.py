@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from subtitle_pipeline.web.app import MAX_BODY_BYTES, Request, WebApp
 from subtitle_pipeline.web.jobs import (
@@ -113,11 +115,12 @@ class AppFixture(unittest.TestCase):
         bound_work_root: Path | None = None,
         bound_source_root: Path | None = None,
         config_path: Path | None = None,
+        environ: dict[str, str] | None = None,
     ) -> WebApp:
         return WebApp(
             store=self.store,
             runner=self.runner,
-            environ={},
+            environ={} if environ is None else environ,
             config_path=self.config if config_path is None else config_path,
             bound_work_root=(self.work if bound_work_root is None else bound_work_root),
             bound_source_root=(
@@ -883,6 +886,255 @@ class SettingsRouteTests(AppFixture):
         )
         self.assertEqual(response.status, 409)
         self.assertEqual(self.payload(response)["error"]["code"], "cannot_rewrite")
+
+
+class SetupRouteTests(AppFixture):
+    def write_config(
+        self,
+        *,
+        source: Path | None = None,
+        model: Path | None = None,
+        asr: Path | None = None,
+        api_key_env: str | None = None,
+        translation: bool = True,
+    ) -> None:
+        text = (
+            "[paths]\n"
+            f'source_root = "{source or self.source}"\n'
+            f'work_root = "{self.work}"\n'
+            f'model_root = "{model or self.model}"\n'
+            f'asr_model = "{asr or self.asr}"\n'
+            "\n[runtime]\n"
+            'device = "auto"\n'
+            'asr_engine = "auto"\n'
+        )
+        if translation:
+            text += (
+                "\n[translation]\n"
+                'endpoint = "http://127.0.0.1:8123/v1"\n'
+                'model = "vendor/model"\n'
+                'revision = "revision-1"\n'
+            )
+            if api_key_env is not None:
+                text += f'api_key_env = "{api_key_env}"\n'
+        self.config.write_text(text, encoding="utf-8")
+
+    def setup_view(self) -> dict:
+        return self.payload(self.request("GET", "/api/meta"))["setup"]
+
+    def test_meta_setup_reports_a_ready_install(self):
+        self.write_config(source=self.source.resolve())
+        self.assertEqual(
+            self.setup_view(),
+            {
+                "source_root": str(self.source.resolve()),
+                "source_exists": True,
+                "source_canonical": True,
+                "translation_configured": True,
+                "api_key_configured": False,
+                "model_root": str(self.model),
+                "model_root_exists": True,
+                "asr_model_exists": True,
+            },
+        )
+
+    def test_meta_setup_reports_an_incomplete_install(self):
+        missing = self.root / "missing"
+        self.write_config(
+            source=missing,
+            model=missing / "models",
+            asr=missing / "asr",
+            translation=False,
+        )
+        self.assertEqual(
+            self.setup_view(),
+            {
+                "source_root": str(missing),
+                "source_exists": False,
+                "source_canonical": False,
+                "translation_configured": False,
+                "api_key_configured": False,
+                "model_root": str(missing / "models"),
+                "model_root_exists": False,
+                "asr_model_exists": False,
+            },
+        )
+
+    def test_meta_setup_is_null_when_settings_do_not_load(self):
+        self.config.write_text('[unknown]\nkey = "value"\n', encoding="utf-8")
+        home = self.root / "home"
+        (home / "Movies").mkdir(parents=True)
+        with mock.patch.object(Path, "home", return_value=home):
+            meta = self.payload(self.request("GET", "/api/meta"))
+        self.assertFalse(meta["settings_ok"])
+        self.assertTrue(meta["load_error"])
+        self.assertIsNone(meta["setup"])
+        self.assertEqual(
+            meta["places"],
+            [
+                {"key": "home", "path": str(home)},
+                {"key": "movies", "path": str(home / "Movies")},
+            ],
+        )
+
+    def test_meta_api_key_configured_follows_the_provider_variable(self):
+        self.write_config(api_key_env="SUBGEN_TEST_KEY")
+        self.app = self.make_app(environ={"OPENAI_API_KEY": "{{SECRET_1e9rpl2q}}"})
+        self.assertFalse(self.setup_view()["api_key_configured"])
+        self.app = self.make_app(environ={"SUBGEN_TEST_KEY": "{{SECRET_4b9hdo7s}}"})
+        response = self.request("GET", "/api/meta")
+        self.assertTrue(self.payload(response)["setup"]["api_key_configured"])
+        self.assertNotIn("{{SECRET_4b9hdo7s}}", response.body.decode("utf-8"))
+
+    def test_source_canonical_rejects_a_symlinked_root(self):
+        link = self.root / "source-link"
+        link.symlink_to(self.source, target_is_directory=True)
+        self.write_config(source=link)
+        setup = self.setup_view()
+        self.assertTrue(setup["source_exists"])
+        self.assertFalse(setup["source_canonical"])
+        self.write_config(source=self.source.resolve())
+        self.assertTrue(self.setup_view()["source_canonical"])
+
+    def test_source_canonical_is_false_for_a_missing_or_looping_root(self):
+        first = self.root / "loop-a"
+        second = self.root / "loop-b"
+        first.symlink_to(second)
+        second.symlink_to(first)
+        self.write_config(source=first)
+        setup = self.setup_view()
+        self.assertFalse(setup["source_exists"])
+        self.assertFalse(setup["source_canonical"])
+
+    def test_places_lists_only_existing_directories_in_order(self):
+        home = self.root / "home"
+        (home / "Videos").mkdir(parents=True)
+        (home / "Movies").mkdir()
+        (home / "Documents").mkdir()
+        with mock.patch.object(Path, "home", return_value=home):
+            meta = self.payload(self.request("GET", "/api/meta"))
+        self.assertEqual(
+            meta["places"],
+            [
+                {"key": "home", "path": str(home)},
+                {"key": "movies", "path": str(home / "Movies")},
+                {"key": "videos", "path": str(home / "Videos")},
+                {"key": "documents", "path": str(home / "Documents")},
+            ],
+        )
+
+    def test_places_is_empty_when_home_cannot_be_resolved(self):
+        with mock.patch.object(Path, "home", side_effect=RuntimeError("no home")):
+            response = self.request("GET", "/api/meta")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.payload(response)["places"], [])
+
+
+class BrowseRouteTests(AppFixture):
+    def setUp(self):
+        super().setUp()
+        self.folder = self.root / "browse"
+        self.folder.mkdir()
+        for name in ("anime", "Beta", "drama", ".hidden"):
+            (self.folder / name).mkdir()
+        (self.folder / "notes.txt").write_text("x", encoding="utf-8")
+
+    def browse(self, path: str):
+        return self.request("GET", f"/api/browse?path={path}")
+
+    def test_browse_lists_only_directories_sorted(self):
+        response = self.browse(str(self.folder))
+        self.assertEqual(response.status, 200)
+        self.assertTrue(response.content_type.startswith("application/json"))
+        folder = self.folder.resolve()
+        self.assertEqual(
+            self.payload(response),
+            {
+                "path": str(folder),
+                "parent": str(self.root.resolve()),
+                "entries": [
+                    {"name": "anime", "path": str(folder / "anime")},
+                    {"name": "Beta", "path": str(folder / "Beta")},
+                    {"name": "drama", "path": str(folder / "drama")},
+                ],
+                "truncated": False,
+            },
+        )
+
+    def test_browse_at_the_filesystem_root_has_no_parent(self):
+        view = self.payload(self.browse("/"))
+        self.assertEqual(view["path"], "/")
+        self.assertIsNone(view["parent"])
+
+    def test_browse_rejects_bad_paths(self):
+        cases = (
+            ("/api/browse", 400, "invalid_path"),
+            ("/api/browse?path=", 400, "invalid_path"),
+            ("/api/browse?path=browse", 400, "invalid_path"),
+            ("/api/browse?path=%2Ftmp%2F%00x", 400, "invalid_path"),
+            ("/api/browse?path=~/subgen-missing-dir", 404, "not_a_directory"),
+            (f"/api/browse?path={self.root / 'missing'}", 404, "not_a_directory"),
+            (f"/api/browse?path={self.folder / 'notes.txt'}", 404, "not_a_directory"),
+        )
+        with mock.patch.dict(os.environ, {"HOME": str(self.root / "no-home")}):
+            for path, status, code in cases:
+                with self.subTest(path=path):
+                    response = self.request("GET", path)
+                    self.assertEqual(response.status, status)
+                    self.assertEqual(self.payload(response)["error"]["code"], code)
+
+    def test_browse_caps_and_marks_a_truncated_listing(self):
+        crowded = self.root / "crowded"
+        crowded.mkdir()
+        for index in range(205):
+            (crowded / f"d{index:03d}").mkdir()
+        view = self.payload(self.browse(str(crowded)))
+        self.assertEqual(len(view["entries"]), 200)
+        self.assertEqual(view["entries"][0]["name"], "d000")
+        self.assertTrue(view["truncated"])
+        exact = self.root / "exact"
+        exact.mkdir()
+        for index in range(200):
+            (exact / f"e{index:03d}").mkdir()
+        view = self.payload(self.browse(str(exact)))
+        self.assertEqual(len(view["entries"]), 200)
+        self.assertFalse(view["truncated"])
+
+    def test_browse_skips_an_entry_it_cannot_stat(self):
+        loop = self.folder / "loop"
+        loop.symlink_to(loop)
+        view = self.payload(self.browse(str(self.folder)))
+        self.assertNotIn("loop", [entry["name"] for entry in view["entries"]])
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_browse_reports_a_forbidden_directory(self):
+        locked = self.root / "locked"
+        locked.mkdir()
+        locked.chmod(0o000)
+        self.addCleanup(locked.chmod, 0o700)
+        response = self.browse(str(locked))
+        self.assertEqual(response.status, 403)
+        self.assertEqual(self.payload(response)["error"]["code"], "forbidden_path")
+
+    def test_browse_keeps_the_host_and_origin_guards(self):
+        path = f"/api/browse?path={self.folder}"
+        forbidden_host = self.request("GET", path, host="example.com:8765")
+        self.assertEqual(forbidden_host.status, 403)
+        self.assertEqual(
+            self.payload(forbidden_host)["error"]["code"], "forbidden_host"
+        )
+        forbidden_origin = self.request(
+            "GET", path, headers={"origin": "http://evil.test"}
+        )
+        self.assertEqual(forbidden_origin.status, 403)
+        self.assertEqual(
+            self.payload(forbidden_origin)["error"]["code"], "forbidden_origin"
+        )
+        self.assertEqual(
+            self.request("GET", path, headers={"content-type": "text/plain"}).status,
+            200,
+        )
+        self.assertEqual(self.request("POST", "/api/browse", body={}).status, 405)
 
 
 if __name__ == "__main__":

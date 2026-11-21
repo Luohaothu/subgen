@@ -21,7 +21,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .. import __version__, runner_cli
-from ..settings import SettingsError, load_settings
+from ..settings import RuntimeSettings, SettingsError, load_settings
 from . import progress, settings_io
 from .jobs import (
     TERMINAL_STATES,
@@ -50,6 +50,17 @@ STATIC_FILES = {
     "app.css": "text/css; charset=utf-8",
 }
 STATIC_NAMES = frozenset({"app.js", "app.css"})
+
+MAX_BROWSE_ENTRIES = 200
+# The frontend owns the labels; these keys and this order are the contract.
+PLACE_DIRECTORIES: tuple[tuple[str, str | None], ...] = (
+    ("home", None),
+    ("movies", "Movies"),
+    ("downloads", "Downloads"),
+    ("desktop", "Desktop"),
+    ("videos", "Videos"),
+    ("documents", "Documents"),
+)
 
 
 class ApiError(Exception):
@@ -187,6 +198,60 @@ def _check_body_keys(body: Mapping[str, object], allowed: frozenset[str]) -> Non
             "request body has unknown fields",
             fields={key: "unknown field" for key in unknown},
         )
+
+
+def _is_directory(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _is_canonical(path: Path) -> bool:
+    try:
+        return path.resolve(strict=True) == path
+    except (OSError, RuntimeError):
+        return False
+
+
+def _entry_is_directory(entry: os.DirEntry[str]) -> bool:
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
+def _setup_view(
+    settings: RuntimeSettings, environ: Mapping[str, str]
+) -> dict[str, object]:
+    """The setup checklist, derived only from the loaded settings."""
+    provider = settings.translation
+    return {
+        "source_root": str(settings.source_root),
+        "source_exists": _is_directory(settings.source_root),
+        "source_canonical": _is_canonical(settings.source_root),
+        "translation_configured": provider is not None,
+        "api_key_configured": bool(
+            provider is not None and environ.get(provider.api_key_env)
+        ),
+        "model_root": str(settings.model_root),
+        "model_root_exists": _is_directory(settings.model_root),
+        "asr_model_exists": _is_directory(settings.asr_model_path),
+    }
+
+
+def _places_view() -> list[dict[str, str]]:
+    """The home-family directories that exist, in the contract order."""
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        return []
+    places: list[dict[str, str]] = []
+    for key, name in PLACE_DIRECTORIES:
+        path = home if name is None else home / name
+        if _is_directory(path):
+            places.append({"key": key, "path": str(path)})
+    return places
 
 
 class WebApp:
@@ -364,6 +429,8 @@ class WebApp:
             )
         if path == "/api/meta":
             return self._method(method, {"GET"}, "GET", lambda: self._meta(request))
+        if path == "/api/browse":
+            return self._method(method, {"GET"}, "GET", lambda: self._browse(query))
         if path == "/api/jobs":
             if method == "GET":
                 return self._list_jobs(query)
@@ -509,6 +576,10 @@ class WebApp:
             "jobs_root": str(self._store.jobs_root),
             "settings_ok": settings is not None,
             "load_error": load_error,
+            "setup": (
+                None if settings is None else _setup_view(settings, self._environ)
+            ),
+            "places": _places_view(),
             "inventory": self._inventory_info(),
             "active_job": None if active is None else self._summary(active),
             "active_job_id": None if active is None else active.job_id,
@@ -534,6 +605,64 @@ class WebApp:
                 document.get("schema_version") if isinstance(document, dict) else None
             ),
         }
+
+    def _browse(self, query: Mapping[str, list[str]]) -> Response:
+        raw = (query.get("path") or [""])[0]
+        expanded = Path(raw).expanduser()
+        if not raw or not expanded.is_absolute():
+            raise ApiError(
+                400,
+                "invalid_path",
+                "browse needs an absolute directory in the path parameter",
+                detail=raw or None,
+            )
+        try:
+            target = expanded.resolve(strict=True)
+        except ValueError as exc:
+            raise ApiError(
+                400,
+                "invalid_path",
+                "the path parameter is not a usable path",
+                detail=str(exc),
+            ) from exc
+        except PermissionError as exc:
+            raise ApiError(
+                403, "forbidden_path", f"cannot read {raw}", detail=str(exc)
+            ) from exc
+        except (OSError, RuntimeError) as exc:
+            raise ApiError(
+                404, "not_a_directory", f"no directory at {raw}", detail=str(exc)
+            ) from exc
+        if not target.is_dir():
+            raise ApiError(404, "not_a_directory", f"not a directory: {target}")
+        try:
+            with os.scandir(target) as scan:
+                names = sorted(
+                    (
+                        entry.name
+                        for entry in scan
+                        if not entry.name.startswith(".") and _entry_is_directory(entry)
+                    ),
+                    key=str.casefold,
+                )
+        except PermissionError as exc:
+            raise ApiError(
+                403, "forbidden_path", f"cannot read {target}", detail=str(exc)
+            ) from exc
+        more = len(names) > MAX_BROWSE_ENTRIES
+        parent = target.parent
+        return Response.json(
+            200,
+            {
+                "path": str(target),
+                "parent": None if parent == target else str(parent),
+                "entries": [
+                    {"name": name, "path": str(target / name)}
+                    for name in names[:MAX_BROWSE_ENTRIES]
+                ],
+                "truncated": more,
+            },
+        )
 
     def _list_jobs(self, query: Mapping[str, list[str]]) -> Response:
         records = self._store.list_records()
